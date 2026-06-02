@@ -13,10 +13,10 @@
  */
 import type { EvalConfig, RunResult, AgentEvent, Verdict } from "@kiln/shared";
 import { grade } from "@kiln/grader";
-import { getAgent } from "./agents/registry.js";
-import { FirecrackerSandbox } from "./sandbox/firecracker.js";
-import { crawlUrl } from "./context/crawler.js";
-import { cloneRepo } from "./context/github.js";
+import { getAgent } from "./agents/registry";
+import { FirecrackerSandbox } from "./sandbox/firecracker";
+import { crawlUrl } from "./context/crawler";
+import { cloneRepo } from "./context/github";
 
 /**
  * Deterministic 32-bit FNV-1a string hash → hex. Used to derive stable run ids
@@ -90,13 +90,31 @@ async function assemblePrompt(config: EvalConfig): Promise<string> {
  * Errors are classified per Decision 18: our own failures become `platform`
  * errors on the result rather than crashing the worker.
  */
-export async function executeRun(config: EvalConfig): Promise<RunResult> {
-  const id = deriveRunId(config);
+export interface ExecuteRunOptions {
+  /**
+   * Distinguishes repeated runs of the same config (re-runs) so each gets a
+   * unique run id — required for the diff/comparison view (Decision 17).
+   */
+  attempt?: number;
+  /** Override the derived run id. */
+  runId?: string;
+  /**
+   * ISO start timestamp. The runner itself stays wall-clock-free (deterministic
+   * for tests); callers that want real ordering pass a real timestamp here.
+   */
+  startedAt?: string;
+}
+
+export async function executeRun(
+  config: EvalConfig,
+  opts: ExecuteRunOptions = {},
+): Promise<RunResult> {
   const evalId = deriveEvalId(config);
+  const id = opts.runId ?? `${deriveRunId(config)}${opts.attempt ? `_${opts.attempt}` : ""}`;
   const evalTitle = deriveTitle(config);
 
-  // Deterministic timestamps derived from the eval id (no wall-clock source).
-  const startedAt = "1970-01-01T00:00:00.000Z";
+  // Deterministic by default; a real timestamp can be supplied by the caller.
+  const startedAt = opts.startedAt ?? "1970-01-01T00:00:00.000Z";
 
   const sandbox = new FirecrackerSandbox(id);
   let events: AgentEvent[] = [];

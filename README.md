@@ -58,14 +58,42 @@ The dark, data-dense developer-tool aesthetic (Decision 12) is implemented in
 
 ## Status — what is real vs simulated
 
-The web app, type model, design system, grading dispatch, agent interface, and
-the full `executeRun` pipeline are real and compile under strict TypeScript.
-Infrastructure that requires a host fleet or external services — **Firecracker
-microVMs, live URL crawling / repo cloning, the Anthropic LLM judge call, S3,
-and the Redis/BullMQ queue** — is implemented behind clean interfaces with
-in-process simulations and is clearly labelled as such in code comments. The
-real backends can be swapped in without touching callers. Sample data in
-`packages/shared/src/mock.ts` lets every screen render end-to-end.
+**Real and working end-to-end** (verified at runtime):
+
+- Submitting the form → `POST /api/evals` validates the config, runs the
+  `executeRun` pipeline, grades it, and **persists** the result; the created
+  eval gets its **own** report at `/reports/<runId>` (not a fixed sample).
+- The report, diff, and OG card render from the persisted store; re-running an
+  eval produces a distinct run and the diff view compares the two (Decision 17).
+- GitHub OAuth (Decision 8): `/auth/github` → `/auth/github/callback` performs
+  the real token exchange and sets an httpOnly session cookie, with a dev
+  fallback so the flow works without credentials configured.
+- A real `vitest` suite (`npm test`) covers the grader assertion runners and the
+  full `executeRun` integration flow.
+
+**Simulated behind clean interfaces** (require a host fleet / external services
+not available in this environment, clearly labelled in code):
+
+- **Firecracker microVMs** — `FirecrackerSandbox` is an in-process simulation of
+  the boot/exec/readFile/teardown lifecycle. The simulated Claude Code agent
+  writes real files into it, so grading reflects an actual (simulated)
+  filesystem rather than canned verdicts.
+- **Redis/BullMQ queue** — the runner exposes `executeRun` (run inline by the
+  API here); the queue worker is documented and env-guarded.
+- **Postgres + S3** — replaced by a `globalThis`-backed in-process store seeded
+  with the sample data (same read/write surface as a Postgres impl).
+- **Live URL crawling / repo cloning** and the **Anthropic LLM judge** —
+  stubbed (`HeuristicJudge`) with the real seam (`LlmJudge`) in place.
+
+Swapping in the real backends does not touch callers.
+
+### Security
+
+`next` is pinned to the latest `14.2.x` patch (`14.2.35`), which clears the
+critical advisories. A residual set of DoS-class advisories is only marked fixed
+in the Next **16** major; that upgrade (React 19 + App Router API changes) is
+deliberately deferred rather than taken blindly. A `postcss` override pins the
+patched `8.5.x`.
 
 ## Develop
 

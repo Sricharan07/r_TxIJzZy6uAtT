@@ -6,7 +6,7 @@
  * report can show what happened; a hint is attached on failure.
  */
 import type { ShellAssertion, Verdict } from "@kiln/shared";
-import type { SandboxHandle } from "../sandbox.js";
+import type { SandboxHandle } from "../sandbox";
 
 /** Cap captured output so a runaway command cannot bloat the run record. */
 const MAX_OUTPUT = 8_000;

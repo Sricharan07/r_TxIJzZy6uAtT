@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { SignIn } from "../components/SignIn";
 
 const STEPS = [
   {
@@ -28,6 +29,10 @@ export default function OnboardingPage() {
         Test whether coding agents can successfully integrate your API. Run real
         agents, grade the results, see exactly where they fail.
       </p>
+
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: "32px" }}>
+        <SignIn />
+      </div>
 
       <div className="onboarding-steps">
         {STEPS.map((s, i) => (

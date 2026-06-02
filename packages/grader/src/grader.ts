@@ -7,11 +7,11 @@
  * the whole grade, so authors always get a complete report.
  */
 import type { Assertion, Verdict } from "@kiln/shared";
-import type { SandboxHandle } from "./sandbox.js";
-import { runShellAssertion } from "./assertions/shell.js";
-import { runHttpAssertion } from "./assertions/http.js";
-import { runFileAssertion } from "./assertions/file.js";
-import { runLlmAssertion, type LlmJudge } from "./assertions/llm-judge.js";
+import type { SandboxHandle } from "./sandbox";
+import { runShellAssertion } from "./assertions/shell";
+import { runHttpAssertion } from "./assertions/http";
+import { runFileAssertion } from "./assertions/file";
+import { runLlmAssertion, type LlmJudge } from "./assertions/llm-judge";
 
 import type {
   ShellAssertion,

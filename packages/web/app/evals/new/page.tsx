@@ -84,10 +84,13 @@ export default function NewEvalPage() {
     setAssertions((a) => [...a, { type: t.type, name: t.name, config: t.config }]);
   }
 
+  const [error, setError] = useState<string | null>(null);
+
   async function run() {
     setSubmitting(true);
+    setError(null);
     try {
-      await fetch("/api/evals", {
+      const res = await fetch("/api/evals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -98,10 +101,18 @@ export default function NewEvalPage() {
           metadata: { agentType: "claude-code", timeoutSec: 300 },
         }),
       });
+      const data = (await res.json()) as { runId?: string; error?: string };
+      if (!res.ok || !data.runId) {
+        setError(data.error ?? "Failed to start the eval. Please try again.");
+        setSubmitting(false);
+        return;
+      }
+      // Navigate to the freshly created run's own report (Decision 6).
+      router.push(`/reports/${data.runId}`);
     } catch {
-      // Best-effort in this sandbox; navigate to the sample report regardless.
+      setError("Could not reach the server. Please try again.");
+      setSubmitting(false);
     }
-    router.push("/reports/a3f9c2e1-8b47-4d2a");
   }
 
   return (
@@ -254,6 +265,22 @@ export default function NewEvalPage() {
               </p>
             </div>
           </div>
+        </div>
+      )}
+
+      {error && (
+        <div
+          style={{
+            marginTop: "16px",
+            padding: "10px 14px",
+            borderRadius: "8px",
+            background: "var(--red-bg)",
+            border: "1px solid var(--red-border)",
+            color: "var(--red-light)",
+            fontSize: "12px",
+          }}
+        >
+          {error}
         </div>
       )}
 

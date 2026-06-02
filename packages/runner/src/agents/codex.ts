@@ -7,7 +7,7 @@
  * returns a minimal, clearly-labelled simulated stream and does no real work.
  */
 import type { AgentEvent } from "@kiln/shared";
-import type { Agent, AgentRun, AgentTask } from "./interface.js";
+import type { Agent, AgentRun, AgentTask } from "./interface";
 
 export class CodexAgent implements Agent {
   readonly type = "codex" as const;

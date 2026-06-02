@@ -119,16 +119,5 @@ export const MOCK_RUN_ERROR: RunResult = {
   events: MOCK_RUN.events.slice(0, 3),
 };
 
-const RUNS: Record<string, RunResult> = {
-  [MOCK_RUN.id]: MOCK_RUN,
-  [MOCK_RUN_FIXED.id]: MOCK_RUN_FIXED,
-  [MOCK_RUN_ERROR.id]: MOCK_RUN_ERROR,
-};
-
-export function getRun(id: string): RunResult | null {
-  return RUNS[id] ?? RUNS[MOCK_RUN.id] ?? null;
-}
-
-export function getEval(id: string): Eval | null {
-  return id === MOCK_EVAL.id ? MOCK_EVAL : MOCK_EVAL;
-}
+// NOTE: run/eval *lookups* live in ./store (the persistence seam). This module
+// only defines the seed data the store is initialized with.

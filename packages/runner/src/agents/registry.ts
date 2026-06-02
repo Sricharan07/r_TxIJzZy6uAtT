@@ -6,9 +6,9 @@
  * agent-agnostic. Adding a new agent = add an adapter + one line here.
  */
 import type { AgentType } from "@kiln/shared";
-import type { Agent } from "./interface.js";
-import { ClaudeCodeAgent } from "./claude-code.js";
-import { CodexAgent } from "./codex.js";
+import type { Agent } from "./interface";
+import { ClaudeCodeAgent } from "./claude-code";
+import { CodexAgent } from "./codex";
 
 const claudeCode = new ClaudeCodeAgent();
 const codex = new CodexAgent();

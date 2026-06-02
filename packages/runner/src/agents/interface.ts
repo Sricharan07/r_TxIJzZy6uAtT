@@ -22,10 +22,19 @@ import type { SandboxHandle } from "@kiln/grader";
  * agent receives — the task text with ingested context already prepended by the
  * worker (Decision 15), so adapters don't each re-implement context assembly.
  */
+/**
+ * A sandbox the agent can write into. The grader only needs the read side
+ * ({@link SandboxHandle}); agents additionally produce files, so adapters get
+ * this wider surface. The concrete `FirecrackerSandbox` implements both.
+ */
+export interface WritableSandbox extends SandboxHandle {
+  writeFile(path: string, contents: string): Promise<void>;
+}
+
 export interface AgentTask {
   config: EvalConfig;
   /** The sandbox the agent runs inside; later inspected by the grader. */
-  sandbox: SandboxHandle;
+  sandbox: WritableSandbox;
   /** Task + ingested context, assembled by the worker, ready to feed the agent. */
   prompt: string;
 }

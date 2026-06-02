@@ -4,58 +4,79 @@
  * Next.js 14 App Router route handler for `/api/evals`.
  *
  * PRODUCTION: POST persists the EvalConfig to Postgres, creates a `runs` row,
- * and enqueues a BullMQ job that the Firecracker-backed runner consumes. GET
- * lists the caller's evals from Postgres.
+ * and enqueues a BullMQ job that the Firecracker-backed runner consumes
+ * asynchronously; the report page then streams live updates (Decision 11).
  *
- * HERE (MVP scaffold): no DB or queue runs in this sandbox, so POST validates
- * the body and returns deterministic ids derived from a simple string hash of
- * the task (no time/random sources). GET returns the single sample eval from
- * "@kiln/shared". The request/response shapes match the production contract.
+ * HERE: there is no Redis/Firecracker fleet in this sandbox, so we run the same
+ * `executeRun` pipeline the queue worker would run — inline — and persist the
+ * result to the shared in-process store (Decision 7). The created eval gets its
+ * OWN real report at `/reports/<runId>`; this is no longer a fixed sample.
  */
 
-import { MOCK_EVAL, MOCK_RUN } from "@kiln/shared";
-import type { EvalConfig } from "@kiln/shared";
+import {
+  saveEval,
+  saveRun,
+  listRunsForEval,
+  listEvals,
+  type Eval,
+  type EvalConfig,
+  type AgentType,
+  type Language,
+} from "@kiln/shared";
+import { executeRun } from "@kiln/runner";
 
-/**
- * Deterministic, dependency-free string hash (FNV-1a, 32-bit) rendered as a
- * fixed-width hex string. Used so the same task always yields the same id —
- * no Date.now()/Math.random(). Not cryptographically secure; ids only.
- */
+// This handler does real work (sandbox simulation + grading) — keep it on the
+// Node.js runtime, not edge.
+export const runtime = "nodejs";
+
+/** Deterministic, dependency-free FNV-1a string hash → fixed-width hex. */
 function hashId(input: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < input.length; i++) {
     h ^= input.charCodeAt(i);
-    // 32-bit FNV prime multiply via shifts to avoid float precision loss.
     h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
   }
   return h.toString(16).padStart(8, "0");
 }
 
-/**
- * Validate that an unknown JSON body carries the EvalConfig fields the runner
- * requires. Returns an error string when invalid, or null when acceptable.
- */
-function validateEvalConfig(body: unknown): string | null {
-  if (typeof body !== "object" || body === null) {
-    return "Request body must be a JSON object";
+const LANGUAGES: Language[] = ["node", "python", "go", "other"];
+const AGENTS: AgentType[] = ["claude-code", "codex", "cursor"];
+
+/** Coerce + validate an unknown body into a full EvalConfig. */
+function parseConfig(body: unknown): { config: EvalConfig } | { error: string } {
+  if (typeof body !== "object" || body === null) return { error: "Request body must be a JSON object" };
+  const b = body as Record<string, unknown>;
+
+  if (typeof b.task !== "string" || b.task.trim().length === 0) {
+    return { error: "Field 'task' is required and must be a non-empty string" };
   }
-  const cfg = body as Partial<EvalConfig>;
-  if (typeof cfg.task !== "string" || cfg.task.trim().length === 0) {
-    return "Field 'task' is required and must be a non-empty string";
+  if (typeof b.language !== "string" || !LANGUAGES.includes(b.language as Language)) {
+    return { error: `Field 'language' is required and must be one of: ${LANGUAGES.join(", ")}` };
   }
-  if (typeof cfg.language !== "string") {
-    return "Field 'language' is required";
+  if (!Array.isArray(b.assertions) || b.assertions.length === 0) {
+    return { error: "Field 'assertions' is required and must be a non-empty array" };
   }
-  if (!Array.isArray(cfg.assertions)) {
-    return "Field 'assertions' is required and must be an array";
-  }
-  return null;
+
+  const meta = (b.metadata ?? {}) as Record<string, unknown>;
+  const agentType = AGENTS.includes(meta.agentType as AgentType)
+    ? (meta.agentType as AgentType)
+    : "claude-code";
+  const timeoutSec = typeof meta.timeoutSec === "number" ? meta.timeoutSec : 300;
+
+  const config: EvalConfig = {
+    task: b.task,
+    language: b.language as Language,
+    context: Array.isArray(b.context) ? (b.context as EvalConfig["context"]) : [],
+    assertions: b.assertions as EvalConfig["assertions"],
+    metadata: { agentType, timeoutSec },
+  };
+  return { config };
 }
 
 /**
- * POST /api/evals — create an eval and enqueue a run.
- * Returns 201 with { evalId, runId, status:"pending" } on success, 400 on
- * validation failure.
+ * POST /api/evals — create an eval, run it, and persist the result.
+ * Returns 201 with { evalId, runId, status } on success, 400 on validation
+ * failure.
  */
 export async function POST(req: Request): Promise<Response> {
   let body: unknown;
@@ -65,34 +86,38 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const error = validateEvalConfig(body);
-  if (error) {
-    return Response.json({ error }, { status: 400 });
-  }
+  const parsed = parseConfig(body);
+  if ("error" in parsed) return Response.json({ error: parsed.error }, { status: 400 });
+  const { config } = parsed;
 
-  const { task } = body as EvalConfig;
+  const evalId = `ev_${hashId(config.task + "|" + config.language)}`;
+  const evalRecord: Eval = {
+    id: evalId,
+    userId: "anon",
+    config,
+    createdAt: new Date().toISOString(),
+    shareToken: `cfg_${hashId(evalId)}`,
+  };
+  saveEval(evalRecord);
 
-  // PRODUCTION: INSERT eval row, INSERT run row, queue.add("run", { runId }).
-  // HERE: derive stable ids from the task text so repeated calls are stable.
-  const evalId = `ev_${hashId(task)}`;
-  const runId = `rn_${hashId(`${evalId}:run`)}`;
+  // Each submission is a fresh run (re-runs of the same config get distinct ids
+  // so the diff view can compare them — Decision 17).
+  const attempt = listRunsForEval(evalId).length;
+  const run = await executeRun(config, { attempt, startedAt: new Date().toISOString() });
+  saveRun(run);
 
-  return Response.json({ evalId, runId, status: "pending" }, { status: 201 });
+  return Response.json({ evalId, runId: run.id, status: run.status }, { status: 201 });
 }
 
 /**
  * GET /api/evals — list evals.
- *
- * PRODUCTION: SELECT from Postgres scoped to the authenticated user.
- * HERE: returns the single sample eval. The title lives on the run record
- * (`evalTitle`); ids/createdAt come from the eval record.
+ * PRODUCTION: SELECT scoped to the authenticated user. HERE: from the store.
  */
 export async function GET(): Promise<Response> {
-  return Response.json([
-    {
-      id: MOCK_EVAL.id,
-      title: MOCK_RUN.evalTitle,
-      createdAt: MOCK_EVAL.createdAt,
-    },
-  ]);
+  const evals = listEvals().map((e) => ({
+    id: e.id,
+    title: e.config.task.split("\n", 1)[0],
+    createdAt: e.createdAt,
+  }));
+  return Response.json(evals);
 }

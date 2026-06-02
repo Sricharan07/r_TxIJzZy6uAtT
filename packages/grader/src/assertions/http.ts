@@ -6,7 +6,7 @@
  * contains that substring.
  */
 import type { HttpAssertion, Verdict } from "@kiln/shared";
-import type { SandboxHandle } from "../sandbox.js";
+import type { SandboxHandle } from "../sandbox";
 
 const MAX_OUTPUT = 8_000;
 

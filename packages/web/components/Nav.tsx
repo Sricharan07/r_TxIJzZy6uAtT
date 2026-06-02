@@ -11,7 +11,7 @@ const LINKS = [
 ];
 
 /** Sticky top nav (Decision 8 — GitHub user avatar; Decision 12 — brand mark). */
-export function Nav() {
+export function Nav({ user }: { user: { login: string } | null }) {
   const pathname = usePathname() ?? "/";
   return (
     <nav className="nav">
@@ -38,9 +38,15 @@ export function Nav() {
             {l.label}
           </Link>
         ))}
-        <div className="nav-user" title="Signed in with GitHub">
-          JK
-        </div>
+        {user ? (
+          <div className="nav-user" title={`Signed in as @${user.login}`}>
+            {user.login.slice(0, 2).toUpperCase()}
+          </div>
+        ) : (
+          <Link className="nav-link" href="/auth/github">
+            Sign in
+          </Link>
+        )}
       </div>
     </nav>
   );

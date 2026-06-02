@@ -17,7 +17,7 @@
  * `Verdict.output` is set to the judge's reasoning.
  */
 import type { LlmAssertion, Verdict } from "@kiln/shared";
-import type { SandboxHandle } from "../sandbox.js";
+import type { SandboxHandle } from "../sandbox";
 
 /** The seam a real Anthropic-backed judge implements. */
 export interface LlmJudge {

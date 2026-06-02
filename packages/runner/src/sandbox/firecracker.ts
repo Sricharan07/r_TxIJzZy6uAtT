@@ -77,6 +77,20 @@ export class FirecrackerSandbox implements SandboxHandle {
         ? { stdout: found, stderr: "", code: 0 }
         : { stdout: "", stderr: `cat: ${path}: No such file or directory\n`, code: 1 };
     }
+    // `node <file>` / `python <file>`: succeeds iff the entry file exists in the
+    // (simulated) FS, so a "node test.js" assertion passes only when the agent
+    // actually produced test.js.
+    const runMatch = cmd.match(/^(?:node|python3?|ts-node)\s+(\S+)/);
+    if (runMatch) {
+      const file = runMatch[1]!;
+      return this.files.has(file)
+        ? { stdout: `[simulated] ran ${file} → exit 0\n`, stderr: "", code: 0 }
+        : { stdout: "", stderr: `Error: Cannot find module '${file}'\n`, code: 1 };
+    }
+    // Common package-manager probes succeed deterministically (no real network).
+    if (/^(npm|pnpm|yarn|npx)\b/.test(cmd)) {
+      return { stdout: `[simulated] ${cmd} → ok\n`, stderr: "", code: 0 };
+    }
     return {
       stdout: "",
       stderr: `[simulated sandbox] command not executed${where}: ${cmd}\n`,

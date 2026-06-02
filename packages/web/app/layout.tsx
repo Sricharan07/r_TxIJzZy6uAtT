@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Nav } from "../components/Nav";
+import { getSession } from "../lib/session";
 
 export const metadata: Metadata = {
   title: "Kiln — Agent Integration Eval Platform",
@@ -9,6 +10,7 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  const session = getSession();
   return (
     <html lang="en">
       <body>
@@ -19,7 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               Free plan — <strong>7 of 10</strong> evals remaining this month
             </span>
           </div>
-          <Nav />
+          <Nav user={session ? { login: session.login } : null} />
           {children}
         </div>
       </body>
