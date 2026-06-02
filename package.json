@@ -1,0 +1,22 @@
+{
+  "name": "kiln",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Kiln — hosted platform for testing whether coding agents can integrate your API",
+  "workspaces": [
+    "packages/shared",
+    "packages/grader",
+    "packages/runner",
+    "packages/web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/grader && npm run build --workspace=packages/runner && npm run build --workspace=packages/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspace=packages/web",
+    "test": "npm run test --workspaces --if-present",
+    "dev": "npm run dev --workspace=packages/web"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
