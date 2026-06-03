@@ -28,6 +28,8 @@ export interface AgentTask {
   sandbox: SandboxHandle;
   /** Task + ingested context, assembled by the worker, ready to feed the agent. */
   prompt: string;
+  /** Persist one normalized event as soon as the adapter observes it. */
+  onEvent?: (event: AgentEvent) => Promise<void>;
 }
 
 /**

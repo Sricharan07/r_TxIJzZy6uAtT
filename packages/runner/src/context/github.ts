@@ -6,34 +6,100 @@
  * scope ingestion to the relevant directories (e.g. ["/src", "/examples"]) so
  * the agent isn't drowned in an entire monorepo.
  *
- * PRODUCTION: `git clone --depth=1`, walk the requested paths, filter to text
- * files, concatenate with per-file headers, and cap total size. THIS IS STUBBED
- * — no git/network here — so it returns deterministic placeholder content
- * derived from the repo URL and paths. The path-scoping shape is real.
+ * Performs `git clone --depth=1`, walks the requested paths, filters to text
+ * files, concatenates with per-file headers, and caps total size.
  */
+import { execFile as execFileCb } from "node:child_process";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
+import { promisify } from "node:util";
+
+const execFile = promisify(execFileCb);
 
 /** Max characters of repo context to keep (mirrors the production cap). */
 const MAX_CHARS = 40_000;
+const MAX_FILES = 40;
 
 export async function cloneRepo(
   repoUrl: string,
   paths: string[],
 ): Promise<{ label: string; content: string }> {
-  // STUB: real implementation would shell out to `git clone --depth=1` into a
-  // temp dir, then read files under each requested path.
   const scoped = paths.length > 0 ? paths : ["/"];
-  const sections = scoped.map((p) => stubbedTree(repoUrl, p));
-
-  const label = `${repoUrl} — ${scoped.join(", ")}`;
-  const content = sections.join("\n\n").slice(0, MAX_CHARS);
-  return { label, content };
+  const tempDir = await mkdtemp(join(tmpdir(), "kiln-repo-"));
+  const repoDir = join(tempDir, "repo");
+  try {
+    try {
+      await execFile("git", ["clone", "--depth=1", normalizeRepoUrl(repoUrl), repoDir], {
+        timeout: 60_000,
+      });
+    } catch (err) {
+      return {
+        label: `${repoUrl} — ${scoped.join(", ")}`,
+        content: `GitHub repo clone failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    const sections: string[] = [];
+    for (const path of scoped) {
+      const fullPath = safeRepoPath(repoDir, path);
+      const files = await collectFiles(fullPath);
+      for (const file of files) {
+        if (sections.length >= MAX_FILES || sections.join("\n\n").length >= MAX_CHARS) break;
+        const content = await readTextFile(file);
+        if (content === null) continue;
+        const rel = file.slice(repoDir.length + 1);
+        sections.push(`## ${rel}\n${content.slice(0, 4_000)}`);
+      }
+    }
+    return { label: `${repoUrl} — ${scoped.join(", ")}`, content: sections.join("\n\n").slice(0, MAX_CHARS) };
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
-/** Deterministic placeholder for one ingested path (no git/network). */
-function stubbedTree(repoUrl: string, path: string): string {
-  return [
-    `## ${repoUrl}${path}`,
-    "[Stubbed clone] No git/network in this environment. In production this is",
-    `the concatenated text of files under \`${path}\`, used as agent context.`,
-  ].join("\n");
+function normalizeRepoUrl(repoUrl: string): string {
+  const trimmed = repoUrl.split(/\s+—\s+|\s+/)[0] ?? repoUrl;
+  if (trimmed.startsWith("http") || trimmed.startsWith("git@")) return trimmed;
+  return `https://${trimmed.replace(/^github\.com\//, "github.com/")}`;
+}
+
+function safeRepoPath(repoDir: string, path: string): string {
+  const fullPath = resolve(repoDir, path.replace(/^\//, ""));
+  if (fullPath !== repoDir && !fullPath.startsWith(repoDir + "/")) {
+    throw new Error(`Repo path escapes checkout: ${path}`);
+  }
+  return fullPath;
+}
+
+async function collectFiles(path: string): Promise<string[]> {
+  const info = await stat(path);
+  if (info.isFile()) return [path];
+  const entries = await readdir(path);
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (entry === ".git" || entry === "node_modules" || entry.startsWith(".")) continue;
+    const fullPath = join(path, entry);
+    const entryInfo = await stat(fullPath);
+    if (entryInfo.isDirectory()) {
+      files.push(...(await collectFiles(fullPath)));
+    } else if (entryInfo.isFile() && isLikelyText(fullPath)) {
+      files.push(fullPath);
+    }
+    if (files.length >= MAX_FILES) break;
+  }
+  return files;
+}
+
+function isLikelyText(path: string): boolean {
+  const name = basename(path).toLowerCase();
+  return /\.(md|mdx|txt|ts|tsx|js|jsx|json|py|go|rs|rb|java|kt|cs|php|yml|yaml|toml|html|css)$/.test(name);
+}
+
+async function readTextFile(path: string): Promise<string | null> {
+  try {
+    const content = await readFile(path, "utf8");
+    return content.includes("\u0000") ? null : content;
+  } catch {
+    return null;
+  }
 }

@@ -9,15 +9,17 @@ import type { AgentType } from "@kiln/shared";
 import type { Agent } from "./interface.js";
 import { ClaudeCodeAgent } from "./claude-code.js";
 import { CodexAgent } from "./codex.js";
+import { CursorAgent } from "./cursor.js";
 
 const claudeCode = new ClaudeCodeAgent();
 const codex = new CodexAgent();
+const cursor = new CursorAgent();
 
 /**
  * Resolve the adapter for `type`.
  *
- * @throws if the agent type has no adapter yet (e.g. "cursor", which is planned
- * but unimplemented). Callers should surface this as a `platform` error.
+ * @throws if the agent type is unknown. Callers surface adapter failures as a
+ * `platform` error.
  */
 export function getAgent(type: AgentType): Agent {
   switch (type) {
@@ -26,7 +28,7 @@ export function getAgent(type: AgentType): Agent {
     case "codex":
       return codex;
     case "cursor":
-      throw new Error(`No agent adapter registered for "${type}" (not yet implemented).`);
+      return cursor;
     default: {
       // Exhaustiveness guard: if AgentType gains a member, this won't compile.
       const _exhaustive: never = type;

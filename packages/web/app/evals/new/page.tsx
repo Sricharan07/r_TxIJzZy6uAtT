@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import type {
   Assertion,
   AssertionType,
@@ -21,16 +21,17 @@ const STEP_LABELS = ["Task", "Context", "Tests", "Run"];
 
 // Defaults mirror the sample eval so first-time users (Decision 14) see a worked example.
 const DEFAULT_CONTEXT: ContextSource[] = [
-  { type: "url", label: "https://docs.acme.dev/payments/quickstart", crawlDepth: "single" },
-  { type: "repo", label: "github.com/acme/payments-sdk — /src, /examples", paths: ["/src", "/examples"] },
-  { type: "file", label: "webhook-examples.ts (uploaded)", content: "// example webhook handler" },
+  {
+    type: "paste",
+    label: "SDK quickstart",
+    content: "Create src/checkout.ts and document the checkout scaffold in README.md.",
+  },
 ];
 
 const DEFAULT_ASSERTIONS: Assertion[] = [
-  { type: "http", name: "Server responds at localhost:3000/health", config: { url: "http://localhost:3000/health", expectStatus: 200 } },
   { type: "file", name: "File exists: src/checkout.ts", config: { path: "src/checkout.ts" } },
-  { type: "shell", name: "node test.js", config: { command: "node test.js" } },
-  { type: "llm", name: "Code follows SDK recommended patterns", config: { criterion: "Code follows the SDK's recommended patterns" } },
+  { type: "shell", name: "Checkout file is visible", config: { command: "test -f src/checkout.ts" } },
+  { type: "llm", name: "README describes checkout scaffold", config: { criterion: "checkout scaffold" } },
 ];
 
 const CTX_ADD: { type: ContextSourceType; label: string }[] = [
@@ -52,8 +53,9 @@ function ctxBadgeClass(t: ContextSourceType): string {
   return t === "repo" ? "repo" : t === "file" || t === "paste" ? "file" : "url";
 }
 
-export default function NewEvalPage() {
+function NewEvalForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [step, setStep] = useState(1);
   const [task, setTask] = useState(
     "Build a checkout flow using the Acme Payments SDK. Create a payment intent for $20, confirm it with a test card, and set up a webhook handler for payment_succeeded."
@@ -62,6 +64,25 @@ export default function NewEvalPage() {
   const [contexts, setContexts] = useState<ContextSource[]>(DEFAULT_CONTEXT);
   const [assertions, setAssertions] = useState<Assertion[]>(DEFAULT_ASSERTIONS);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const source = searchParams.get("from");
+    if (!source) return;
+    let cancelled = false;
+    void fetch(`/api/evals/${encodeURIComponent(source)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { eval?: { config: { task: string; language: Language; context: ContextSource[]; assertions: Assertion[] } } } | null) => {
+        if (cancelled || !data?.eval) return;
+        setTask(data.eval.config.task);
+        setLanguage(data.eval.config.language);
+        setContexts(data.eval.config.context);
+        setAssertions(data.eval.config.assertions);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams]);
 
   const tokenEstimate = useMemo(() => {
     // Rough deterministic estimate: ~4k per source baseline + content length / 4.
@@ -80,14 +101,27 @@ export default function NewEvalPage() {
     setContexts((c) => [...c, { type, label: labels[type] }]);
   }
 
+  function updateContext(idx: number, patch: Partial<ContextSource>) {
+    setContexts((current) => current.map((source, i) => (i === idx ? { ...source, ...patch } : source)));
+  }
+
   function addAssertion(t: (typeof ASSERT_TEMPLATES)[number]) {
     setAssertions((a) => [...a, { type: t.type, name: t.name, config: t.config }]);
   }
 
+  function updateAssertionName(idx: number, name: string) {
+    setAssertions((current) => current.map((a, i) => (i === idx ? { ...a, name } : a)));
+  }
+
+  function updateAssertionConfig(idx: number, config: Assertion["config"]) {
+    setAssertions((current) => current.map((a, i) => (i === idx ? { ...a, config } : a)));
+  }
+
   async function run() {
     setSubmitting(true);
+    setSubmitError(null);
     try {
-      await fetch("/api/evals", {
+      const res = await fetch("/api/evals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -98,10 +132,16 @@ export default function NewEvalPage() {
           metadata: { agentType: "claude-code", timeoutSec: 300 },
         }),
       });
-    } catch {
-      // Best-effort in this sandbox; navigate to the sample report regardless.
+      const data = (await res.json()) as { runId?: string; reportUrl?: string; error?: string };
+      if (!res.ok || !data.reportUrl) {
+        throw new Error(data.error ?? "Could not start eval.");
+      }
+      router.push(data.reportUrl);
+      return;
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Could not start eval.");
     }
-    router.push("/reports/a3f9c2e1-8b47-4d2a");
+    setSubmitting(false);
   }
 
   return (
@@ -173,7 +213,24 @@ export default function NewEvalPage() {
             {contexts.map((c, i) => (
               <div className="context-source" key={i}>
                 <span className={`ctx-badge ${ctxBadgeClass(c.type)}`}>{c.type}</span>
-                <span className="ctx-name">{c.label}</span>
+                <input
+                  className="inline-input"
+                  value={c.label}
+                  onChange={(e) => updateContext(i, { label: e.target.value })}
+                  aria-label={`${c.type} source`}
+                />
+                {c.type === "url" && (
+                  <button
+                    className={`mini-toggle${c.crawlDepth === "linked" ? " selected" : ""}`}
+                    onClick={() =>
+                      updateContext(i, {
+                        crawlDepth: c.crawlDepth === "linked" ? "single" : "linked",
+                      })
+                    }
+                  >
+                    {c.crawlDepth === "linked" ? "linked pages" : "single page"}
+                  </button>
+                )}
                 <button
                   className="ctx-remove"
                   aria-label="Remove source"
@@ -181,6 +238,27 @@ export default function NewEvalPage() {
                 >
                   ×
                 </button>
+                {(c.type === "file" || c.type === "paste") && (
+                  <>
+                    {c.type === "file" && (
+                      <input
+                        className="file-input"
+                        type="file"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (!file) return;
+                          void file.text().then((content) => updateContext(i, { label: file.name, content }));
+                        }}
+                      />
+                    )}
+                    <textarea
+                      className="input compact"
+                      value={c.content ?? ""}
+                      onChange={(e) => updateContext(i, { content: e.target.value })}
+                      placeholder={c.type === "file" ? "Uploaded file contents" : "Paste docs or code snippet"}
+                    />
+                  </>
+                )}
               </div>
             ))}
           </div>
@@ -191,13 +269,17 @@ export default function NewEvalPage() {
               </button>
             ))}
           </div>
-          <div className="context-preview">
-            <span>
+          <details className="context-preview context-bundle-preview">
+            <summary>
               Agent will see {contexts.length} source{contexts.length === 1 ? "" : "s"} · ~
               {tokenEstimate.toLocaleString("en-US")} tokens
-            </span>
-            <span style={{ color: "var(--green)", fontSize: "11px" }}>Preview →</span>
-          </div>
+            </summary>
+            <pre>
+              {contexts
+                .map((source) => `### ${source.type}: ${source.label}\n${source.content ?? "Fetched fresh when the run starts."}`)
+                .join("\n\n")}
+            </pre>
+          </details>
         </div>
       )}
 
@@ -211,9 +293,12 @@ export default function NewEvalPage() {
             {assertions.map((a, i) => (
               <div className="assertion-row" key={i}>
                 <span className={`assert-badge ${a.type}`}>{a.type.toUpperCase()}</span>
-                <span className="assert-text">
-                  {a.type === "shell" ? <code>{(a.config as { command: string }).command}</code> : a.name}
-                </span>
+                <input
+                  className="inline-input"
+                  value={a.name}
+                  onChange={(e) => updateAssertionName(i, e.target.value)}
+                  aria-label={`${a.type} assertion name`}
+                />
                 <button
                   className="ctx-remove"
                   aria-label="Remove assertion"
@@ -221,6 +306,75 @@ export default function NewEvalPage() {
                 >
                   ×
                 </button>
+                {a.type === "http" && (
+                  <div className="assert-config">
+                    <input
+                      className="inline-input"
+                      value={(a.config as { url: string }).url}
+                      onChange={(e) =>
+                        updateAssertionConfig(i, { ...(a.config as { url: string; expectStatus?: number; expectBodyContains?: string }), url: e.target.value })
+                      }
+                      aria-label="HTTP URL"
+                    />
+                    <input
+                      className="inline-input small"
+                      value={(a.config as { expectStatus?: number }).expectStatus ?? 200}
+                      onChange={(e) =>
+                        updateAssertionConfig(i, {
+                          ...(a.config as { url: string; expectStatus?: number; expectBodyContains?: string }),
+                          expectStatus: Number(e.target.value),
+                        })
+                      }
+                      aria-label="Expected status"
+                    />
+                  </div>
+                )}
+                {a.type === "file" && (
+                  <div className="assert-config">
+                    <input
+                      className="inline-input"
+                      value={(a.config as { path: string }).path}
+                      onChange={(e) =>
+                        updateAssertionConfig(i, { ...(a.config as { path: string; contains?: string }), path: e.target.value })
+                      }
+                      aria-label="File path"
+                    />
+                    <input
+                      className="inline-input"
+                      value={(a.config as { contains?: string }).contains ?? ""}
+                      onChange={(e) =>
+                        updateAssertionConfig(i, {
+                          ...(a.config as { path: string; contains?: string }),
+                          contains: e.target.value || undefined,
+                        })
+                      }
+                      placeholder="Optional contains"
+                      aria-label="Expected file contents"
+                    />
+                  </div>
+                )}
+                {a.type === "shell" && (
+                  <div className="assert-config">
+                    <input
+                      className="inline-input mono"
+                      value={(a.config as { command: string }).command}
+                      onChange={(e) =>
+                        updateAssertionConfig(i, { ...(a.config as { command: string; cwd?: string }), command: e.target.value })
+                      }
+                      aria-label="Shell command"
+                    />
+                  </div>
+                )}
+                {a.type === "llm" && (
+                  <div className="assert-config">
+                    <textarea
+                      className="input compact"
+                      value={(a.config as { criterion: string }).criterion}
+                      onChange={(e) => updateAssertionConfig(i, { criterion: e.target.value })}
+                      aria-label="LLM criterion"
+                    />
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -276,6 +430,15 @@ export default function NewEvalPage() {
           </button>
         )}
       </div>
+      {submitError && <p className="form-error">{submitError}</p>}
     </div>
+  );
+}
+
+export default function NewEvalPage() {
+  return (
+    <Suspense fallback={<div className="form-wrapper">Loading eval form...</div>}>
+      <NewEvalForm />
+    </Suspense>
   );
 }

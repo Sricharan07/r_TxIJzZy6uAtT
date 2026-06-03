@@ -1,4 +1,5 @@
-import { MOCK_RUN, MOCK_RUN_FIXED, type RunResult, type Verdict } from "@kiln/shared";
+import type { RunResult, Verdict } from "@kiln/shared";
+import { getStore } from "@kiln/shared/store";
 
 function colDate(iso: string): string {
   const d = new Date(iso);
@@ -69,11 +70,38 @@ function VerdictColumn({
 }
 
 /** Side-by-side run comparison with FIXED/REGRESSED tags (Decision 17). */
-export default function DiffPage() {
-  const previous = MOCK_RUN;
-  const latest = MOCK_RUN_FIXED;
+export default async function DiffPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const selected = await getStore().getRun(id);
+  if (!selected) {
+    return (
+      <div className="diff-header">
+        <h2>Run Comparison</h2>
+        <p>Report not found.</p>
+      </div>
+    );
+  }
+  const runs = await getStore().listRuns(selected.evalId);
+  const selectedIndex = runs.findIndex((r) => r.id === selected.id);
+  const latest = runs[selectedIndex >= 0 ? selectedIndex : runs.length - 1] ?? selected;
+  const previousCandidates = runs
+    .slice(0, selectedIndex >= 0 ? selectedIndex : runs.length - 1)
+    .filter((r) => r.verdicts.length > 0);
+  const previous =
+    previousCandidates.length > 0 ? previousCandidates[previousCandidates.length - 1] : undefined;
+  if (!previous) {
+    return (
+      <div className="diff-header">
+        <h2>Run Comparison</h2>
+        <p>Run the eval at least twice to compare verdict changes.</p>
+      </div>
+    );
+  }
   const fixedCount = latest.verdicts.filter(
     (v) => flip(previous.verdicts[v.assertionIndex], v) === "fixed"
+  ).length;
+  const regressedCount = latest.verdicts.filter(
+    (v) => flip(previous.verdicts[v.assertionIndex], v) === "regressed"
   ).length;
 
   return (
@@ -87,9 +115,14 @@ export default function DiffPage() {
         <VerdictColumn label="Latest Run" run={latest} prev={previous} />
       </div>
       <div className="diff-footer">
-        <strong style={{ color: "var(--green)" }}>+{fixedCount} tests fixed</strong> after
-        updating webhook docs to reference{" "}
-        <code>webhooks.listen()</code>
+        <strong style={{ color: "var(--green)" }}>+{fixedCount} tests fixed</strong>
+        {regressedCount > 0 && (
+          <>
+            {" "}
+            <strong style={{ color: "var(--red)" }}>-{regressedCount} regressed</strong>
+          </>
+        )}{" "}
+        compared with the previous run
       </div>
     </div>
   );

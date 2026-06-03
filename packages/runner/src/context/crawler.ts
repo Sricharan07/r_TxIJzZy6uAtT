@@ -7,10 +7,8 @@
  *   - "single" — just the given page.
  *   - "linked" — the page plus pages it links to (one hop, same origin).
  *
- * PRODUCTION: fetch over HTTP, strip boilerplate to readable text/markdown,
- * dedupe, and cap total size. THIS IS STUBBED — there is no network in this
- * environment, so it returns deterministic placeholder content derived from the
- * URL. The depth branch is real so callers/tests can exercise both paths.
+ * Fetches over HTTP, strips basic HTML boilerplate to readable text, dedupes,
+ * and caps total size.
  */
 
 /** Max characters of crawled context to keep (mirrors the production cap). */
@@ -20,26 +18,68 @@ export async function crawlUrl(
   url: string,
   depth: "single" | "linked",
 ): Promise<{ label: string; content: string }> {
-  // STUB: real implementation would do `await fetch(url)` and extract text.
-  const pages: string[] = [stubbedPage(url)];
+  const root = new URL(url);
+  const visited = new Set<string>();
+  const pages: string[] = [];
+  const rootPage = await fetchPage(root.toString());
+  visited.add(root.toString());
+  pages.push(formatPage(root.toString(), rootPage.text));
 
   if (depth === "linked") {
-    // PRODUCTION: parse <a href> from the root page, keep same-origin links,
-    // fetch each once. STUB: synthesize two deterministic linked pages.
-    pages.push(stubbedPage(url + "/guide"));
-    pages.push(stubbedPage(url + "/reference"));
+    for (const link of rootPage.links) {
+      if (pages.join("\n\n").length >= MAX_CHARS) break;
+      const linked = new URL(link, root);
+      if (linked.origin !== root.origin || visited.has(linked.toString())) continue;
+      visited.add(linked.toString());
+      const page = await fetchPage(linked.toString());
+      pages.push(formatPage(linked.toString(), page.text));
+      if (pages.length >= 4) break;
+    }
   }
 
   const content = pages.join("\n\n---\n\n").slice(0, MAX_CHARS);
   return { label: url, content };
 }
 
-/** Deterministic placeholder for one fetched page (no network). */
-function stubbedPage(pageUrl: string): string {
-  return [
-    `# Fetched (stubbed): ${pageUrl}`,
-    "",
-    "[Stubbed crawl] No network in this environment. In production this is the",
-    "extracted readable text of the page above, used as agent context.",
-  ].join("\n");
+async function fetchPage(pageUrl: string): Promise<{ text: string; links: string[] }> {
+  try {
+    const res = await fetch(pageUrl);
+    if (!res.ok) {
+      return { text: `Fetch failed: HTTP ${res.status}`, links: [] };
+    }
+    const html = await res.text();
+    return { text: extractText(html), links: extractLinks(html) };
+  } catch (err) {
+    return {
+      text: `Fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+      links: [],
+    };
+  }
+}
+
+function formatPage(pageUrl: string, text: string): string {
+  return [`# ${pageUrl}`, "", text].join("\n");
+}
+
+function extractText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 8_000);
+}
+
+function extractLinks(html: string): string[] {
+  const links: string[] = [];
+  const re = /<a\s+[^>]*href=["']([^"']+)["']/gi;
+  for (let match = re.exec(html); match; match = re.exec(html)) {
+    links.push(match[1] as string);
+  }
+  return links;
 }

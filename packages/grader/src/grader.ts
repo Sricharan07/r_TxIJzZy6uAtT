@@ -2,9 +2,9 @@
  * Grader dispatch (Decision 5 grading; Decision 16 assertion types).
  *
  * Runs every assertion against a finished sandbox and returns one verdict per
- * assertion, preserving order. Each assertion is graded independently; an infra
- * error in one becomes a failed verdict for that assertion rather than aborting
- * the whole grade, so authors always get a complete report.
+ * assertion, preserving order. Assertion implementations return verdicts for
+ * logical failures. Transport exceptions propagate so the runner can classify
+ * them as platform failures rather than blaming the evaluated integration.
  */
 import type { Assertion, Verdict } from "@kiln/shared";
 import type { SandboxHandle } from "./sandbox.js";
@@ -52,20 +52,7 @@ export async function grade(
   const verdicts: Verdict[] = [];
   for (let idx = 0; idx < assertions.length; idx++) {
     const assertion = assertions[idx]!;
-    try {
-      verdicts.push(await gradeOne(assertion, idx, sandbox, judge));
-    } catch (err) {
-      // Infrastructure failure while probing the sandbox: record as a failed
-      // verdict so the report stays complete instead of throwing.
-      verdicts.push({
-        assertionIndex: idx,
-        type: assertion.type,
-        name: assertion.name,
-        passed: false,
-        output: err instanceof Error ? err.message : String(err),
-        hint: "Grader could not evaluate this assertion (sandbox/infra error).",
-      });
-    }
+    verdicts.push(await gradeOne(assertion, idx, sandbox, judge));
   }
   return verdicts;
 }

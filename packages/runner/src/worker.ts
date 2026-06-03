@@ -13,10 +13,44 @@
  */
 import type { EvalConfig, RunResult, AgentEvent, Verdict } from "@kiln/shared";
 import { grade } from "@kiln/grader";
+import { Worker } from "bullmq";
+import { getStore } from "@kiln/shared/store";
 import { getAgent } from "./agents/registry.js";
-import { FirecrackerSandbox } from "./sandbox/firecracker.js";
+import { createSandbox } from "./sandbox/firecracker.js";
+import type { RunnerSandbox } from "./sandbox/firecracker.js";
+import type { Agent } from "./agents/interface.js";
 import { crawlUrl } from "./context/crawler.js";
 import { cloneRepo } from "./context/github.js";
+
+export interface ExecuteRunOptions {
+  runId?: string;
+  evalId?: string;
+  evalTitle?: string;
+  onEvent?: (event: AgentEvent) => Promise<void>;
+  /** Test seam for exercising timeout/error behavior without external infra. */
+  sandbox?: RunnerSandbox;
+  /** Test seam for exercising timeout/error behavior without a live agent CLI. */
+  agent?: Agent;
+}
+
+interface RunJob {
+  evalId: string;
+  runId: string;
+}
+
+function redisConnection() {
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) throw new Error("REDIS_URL is required when RUNNER_ENABLE_QUEUE=1.");
+  const parsed = new URL(redisUrl);
+  return {
+    host: parsed.hostname,
+    port: Number(parsed.port || 6379),
+    username: parsed.username || undefined,
+    password: parsed.password || undefined,
+    tls: parsed.protocol === "rediss:" ? {} : undefined,
+    maxRetriesPerRequest: null,
+  };
+}
 
 /**
  * Deterministic 32-bit FNV-1a string hash → hex. Used to derive stable run ids
@@ -48,10 +82,29 @@ function deriveTitle(config: EvalConfig): string {
   return first.length > 80 ? first.slice(0, 77) + "…" : first;
 }
 
+class RunTimeoutError extends Error {}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutSec: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new RunTimeoutError(`Run exceeded ${timeoutSec}s timeout.`)),
+          timeoutSec * 1_000,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * Ingest every {@link ContextSource} into a single prompt block (Decision 15).
  *
- * `url`/`repo` sources are (stub-)fetched fresh; `file`/`paste` use their stored
+ * `url`/`repo` sources are fetched fresh; `file`/`paste` use their stored
  * `content` verbatim. The assembled text is prepended to the task so the agent
  * sees task + context as one prompt.
  */
@@ -83,23 +136,26 @@ async function assemblePrompt(config: EvalConfig): Promise<string> {
 /**
  * Execute one eval end-to-end and assemble a {@link RunResult}.
  *
- * Pipeline: ingest context → boot (simulated) Firecracker sandbox → drive the
+ * Pipeline: ingest context → boot the selected sandbox → drive the
  * agent (collecting {@link AgentEvent}s) → grade the finished sandbox → tear
  * down → assemble result. Runs fully in-process; no Redis/infra required.
  *
  * Errors are classified per Decision 18: our own failures become `platform`
  * errors on the result rather than crashing the worker.
  */
-export async function executeRun(config: EvalConfig): Promise<RunResult> {
-  const id = deriveRunId(config);
-  const evalId = deriveEvalId(config);
-  const evalTitle = deriveTitle(config);
+export async function executeRun(
+  config: EvalConfig,
+  options: ExecuteRunOptions = {},
+): Promise<RunResult> {
+  const id = options.runId ?? deriveRunId(config);
+  const evalId = options.evalId ?? deriveEvalId(config);
+  const evalTitle = options.evalTitle ?? deriveTitle(config);
 
-  // Deterministic timestamps derived from the eval id (no wall-clock source).
-  const startedAt = "1970-01-01T00:00:00.000Z";
+  const startedAt = new Date().toISOString();
 
-  const sandbox = new FirecrackerSandbox(id);
+  const sandbox = options.sandbox ?? createSandbox(id);
   let events: AgentEvent[] = [];
+  let streamedEventCount = 0;
   let verdicts: Verdict[] = [];
   let tokens = 0;
   let totalSteps = 0;
@@ -110,14 +166,29 @@ export async function executeRun(config: EvalConfig): Promise<RunResult> {
     await sandbox.boot();
 
     const prompt = await assemblePrompt(config);
-    const agent = getAgent(config.metadata.agentType);
+    const agent = options.agent ?? getAgent(config.metadata.agentType);
 
-    // Drive the agent. The microVM enforces the hard timeout in production
-    // (config.metadata.timeoutSec); here the simulated run always completes.
-    const run = await agent.startTask({ config, sandbox, prompt });
+    const run = await withTimeout(
+      agent.startTask({
+        config,
+        sandbox,
+        prompt,
+        async onEvent(event) {
+          streamedEventCount += 1;
+          events.push(event);
+          await options.onEvent?.(event);
+        },
+      }),
+      config.metadata.timeoutSec,
+    );
     await run.collectArtifacts();
 
     events = run.events;
+    if (options.onEvent && streamedEventCount === 0) {
+      for (const event of events) {
+        await options.onEvent(event);
+      }
+    }
     tokens = run.tokens;
     totalSteps = run.steps;
 
@@ -128,7 +199,7 @@ export async function executeRun(config: EvalConfig): Promise<RunResult> {
   } catch (err) {
     // Decision 18: classify our own failures as platform errors.
     status = "errored";
-    errorType = "platform";
+    errorType = err instanceof RunTimeoutError ? "timeout" : "platform";
     events = [
       ...events,
       {
@@ -139,14 +210,24 @@ export async function executeRun(config: EvalConfig): Promise<RunResult> {
       },
     ];
   } finally {
-    await sandbox.teardown();
+    try {
+      await sandbox.teardown();
+    } catch (err) {
+      if (status !== "errored") {
+        status = "errored";
+        errorType = "platform";
+        events.push({
+          t: 0,
+          kind: "fail",
+          text: "Sandbox teardown failed",
+          annotation: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
 
-  // Deterministic duration from the last event timestamp (no wall clock).
   const durationSec = events.length ? Math.max(...events.map((e) => e.t)) : 0;
-  // By here the run has resolved (completed or errored), so it always has a
-  // finish time. Reuse the deterministic startedAt to avoid a wall-clock source.
-  const finishedAt = startedAt;
+  const finishedAt = new Date().toISOString();
 
   return {
     id,
@@ -167,12 +248,10 @@ export async function executeRun(config: EvalConfig): Promise<RunResult> {
 }
 
 /**
- * Start the BullMQ worker (Decision 1) — DOCUMENTED, env-guarded.
+ * Start the BullMQ worker (Decision 1).
  *
  * Only wires up Redis when `RUNNER_ENABLE_QUEUE=1`, so importing this module
- * (and running {@link executeRun} directly) never requires Redis. The BullMQ
- * import is intentionally dynamic and described rather than hard-wired, because
- * `bullmq`/Redis are not available in this sandbox.
+ * and running {@link executeRun} directly never requires queue infrastructure.
  */
 export async function startWorker(): Promise<void> {
   if (process.env.RUNNER_ENABLE_QUEUE !== "1") {
@@ -181,16 +260,30 @@ export async function startWorker(): Promise<void> {
     return;
   }
 
-  // PRODUCTION (pseudo-code; bullmq not installed here):
-  //
-  //   const { Worker } = await import("bullmq");
-  //   const connection = { url: process.env.REDIS_URL };
-  //   new Worker("kiln-runs", async (job) => {
-  //     const result = await executeRun(job.data.config as EvalConfig);
-  //     // persist `result` to Postgres / notify the web app
-  //     return result;
-  //   }, { connection });
-  //
-  // Left undialed-into here on purpose: see comment above.
-  throw new Error("Queue mode requested but bullmq/Redis are not available in this environment.");
+  const worker = new Worker<RunJob>(
+    "kiln-runs",
+    async (job) => {
+      const store = getStore();
+      const evalRecord = await store.getEval(job.data.evalId);
+      const existingRun = await store.getRun(job.data.runId);
+      if (!evalRecord || !existingRun) {
+        throw new Error(`Missing eval/run for job ${job.id}`);
+      }
+      await store.saveRun({ ...existingRun, status: "running", startedAt: new Date().toISOString() });
+      const result = await executeRun(evalRecord.config, {
+        runId: existingRun.id,
+        evalId: evalRecord.id,
+        evalTitle: existingRun.evalTitle,
+        async onEvent(event) {
+          const current = await store.getRun(existingRun.id);
+          if (!current) return;
+          await store.saveRun({ ...current, events: [...current.events, event] });
+        },
+      });
+      await store.saveRun(result);
+      return result;
+    },
+    { connection: redisConnection() },
+  );
+  await worker.waitUntilReady();
 }

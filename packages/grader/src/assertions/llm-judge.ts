@@ -6,13 +6,9 @@
  * production this calls the Anthropic Messages API with the criterion plus a
  * bundle of run artifacts and parses a pass/fail + reasoning.
  *
- * IMPORTANT — what is real vs simulated here:
- *   - The `LlmJudge` interface is the real seam.
- *   - `HeuristicJudge` is a deterministic STUB used when no API key is
- *     configured (and in this sandbox, where outbound LLM calls are not
- *     available). It does NOT actually reason about the criterion; it applies a
- *     transparent keyword heuristic and labels its reasoning as a stub so
- *     nobody mistakes it for a real judgement.
+ * `AnthropicJudge` calls the Messages API when `ANTHROPIC_API_KEY` and
+ * `KILN_LLM_JUDGE_MODEL` are configured. `HeuristicJudge` remains an explicit
+ * local-development fallback when no provider credentials are present.
  *
  * `Verdict.output` is set to the judge's reasoning.
  */
@@ -27,6 +23,77 @@ export interface LlmJudge {
    * @param artifacts text bundle (file contents, command output) to judge against
    */
   judge(criterion: string, artifacts: string): Promise<{ passed: boolean; reasoning: string }>;
+}
+
+interface AnthropicResponse {
+  content?: Array<{ type: string; text?: string }>;
+}
+
+interface JudgePayload {
+  passed: boolean;
+  reasoning: string;
+}
+
+function parseJudgePayload(text: string): JudgePayload {
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)?.[1];
+  const json = JSON.parse((fenced ?? text).trim()) as Partial<JudgePayload>;
+  if (typeof json.passed !== "boolean" || typeof json.reasoning !== "string") {
+    throw new Error("Anthropic judge returned an invalid verdict payload.");
+  }
+  return { passed: json.passed, reasoning: json.reasoning };
+}
+
+/** Anthropic Messages API implementation used in configured environments. */
+export class AnthropicJudge implements LlmJudge {
+  constructor(
+    private readonly apiKey: string,
+    private readonly model: string,
+    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly apiUrl = "https://api.anthropic.com/v1/messages",
+  ) {}
+
+  async judge(criterion: string, artifacts: string): Promise<JudgePayload> {
+    const response = await this.fetchImpl(this.apiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": this.apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: 600,
+        system:
+          "You grade coding-agent artifacts. Return only JSON with keys passed (boolean) and reasoning (string). Judge only from the supplied artifacts.",
+        messages: [
+          {
+            role: "user",
+            content: `Criterion:\n${criterion}\n\nArtifacts:\n${artifacts}`,
+          },
+        ],
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`Anthropic judge request failed: ${response.status} ${await response.text()}`);
+    }
+    const data = (await response.json()) as AnthropicResponse;
+    const text = data.content
+      ?.filter((block) => block.type === "text")
+      .map((block) => block.text ?? "")
+      .join("\n");
+    if (!text) throw new Error("Anthropic judge returned no text content.");
+    return parseJudgePayload(text);
+  }
+}
+
+export function createDefaultLlmJudge(): LlmJudge {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return new HeuristicJudge();
+  const model = process.env.KILN_LLM_JUDGE_MODEL;
+  if (!model) {
+    throw new Error("KILN_LLM_JUDGE_MODEL is required when ANTHROPIC_API_KEY is configured.");
+  }
+  return new AnthropicJudge(apiKey, model);
 }
 
 /**
@@ -81,7 +148,7 @@ export async function runLlmAssertion(
   name: string,
   idx: number,
   sandbox: SandboxHandle,
-  judge: LlmJudge = new HeuristicJudge(),
+  judge: LlmJudge = createDefaultLlmJudge(),
 ): Promise<Verdict> {
   const artifacts = await gatherArtifacts(a.criterion, sandbox);
   const { passed, reasoning } = await judge.judge(a.criterion, artifacts);

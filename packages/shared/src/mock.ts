@@ -3,7 +3,7 @@
  * renders real, type-checked data without a live Postgres/runner. In production
  * these rows come from the DB; the shapes are identical.
  */
-import type { Eval, RunResult, User } from "./types";
+import type { Eval, RunResult, User } from "./types.js";
 
 export const MOCK_USER: User = {
   id: "u_jk",

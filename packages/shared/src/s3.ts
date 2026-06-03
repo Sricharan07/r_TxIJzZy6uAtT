@@ -7,7 +7,8 @@
  * absent (local dev / sandbox), it falls back to an in-memory store so the rest
  * of the system runs without external dependencies.
  */
-import type { AgentEvent } from "./types";
+import type { AgentEvent } from "./types.js";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 export interface BlobStore {
   putTrace(runId: string, events: AgentEvent[]): Promise<string>;
@@ -33,14 +34,70 @@ class MemoryBlobStore implements BlobStore {
   }
 }
 
+class S3BlobStore implements BlobStore {
+  private readonly client: S3Client;
+
+  constructor(
+    private readonly bucket: string,
+    private readonly prefix: string,
+  ) {
+    this.client = new S3Client({
+      region: process.env.KILN_S3_REGION ?? process.env.AWS_REGION ?? "us-east-1",
+      endpoint: process.env.KILN_S3_ENDPOINT,
+      forcePathStyle: process.env.KILN_S3_FORCE_PATH_STYLE === "1",
+    });
+  }
+
+  async putTrace(runId: string, events: AgentEvent[]): Promise<string> {
+    const key = this.key(`traces/${runId}.json`);
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Body: JSON.stringify(events),
+        ContentType: "application/json",
+      }),
+    );
+    return key;
+  }
+
+  async getTrace(key: string): Promise<AgentEvent[] | null> {
+    try {
+      const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+      const bytes = await res.Body?.transformToByteArray();
+      if (!bytes) return null;
+      return JSON.parse(new TextDecoder().decode(bytes)) as AgentEvent[];
+    } catch {
+      return null;
+    }
+  }
+
+  async putAsset(key: string, body: Uint8Array, contentType: string): Promise<string> {
+    const finalKey = this.key(key);
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: finalKey,
+        Body: body,
+        ContentType: contentType,
+      }),
+    );
+    return finalKey;
+  }
+
+  private key(key: string): string {
+    return this.prefix ? `${this.prefix.replace(/\/$/, "")}/${key}` : key;
+  }
+}
+
 /**
  * Returns the configured S3-backed store, or the in-memory fallback. The real
  * implementation (AWS SDK / R2) is wired in here once `KILN_S3_BUCKET` is set;
  * the interface above is what callers depend on.
  */
 export function getBlobStore(): BlobStore {
-  // A real deployment reads KILN_S3_BUCKET / KILN_S3_REGION / credentials and
-  // returns an S3-backed BlobStore. Kept behind the interface so swapping the
-  // backend never touches callers.
+  if (process.env.KILN_S3_BUCKET) {
+    return new S3BlobStore(process.env.KILN_S3_BUCKET, process.env.KILN_S3_PREFIX ?? "");
+  }
   return new MemoryBlobStore();
 }

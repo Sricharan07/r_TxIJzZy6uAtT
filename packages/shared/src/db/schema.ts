@@ -7,6 +7,8 @@
  */
 
 export const SCHEMA_SQL = /* sql */ `
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- Decision 8: GitHub OAuth users
 CREATE TABLE IF NOT EXISTS users (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -45,10 +47,14 @@ CREATE TABLE IF NOT EXISTS verdicts (
   run_id           UUID NOT NULL REFERENCES runs(id),
   assertion_index  INTEGER NOT NULL,
   type             TEXT NOT NULL,  -- shell|http|file|llm
+  name             TEXT NOT NULL,
   passed           BOOLEAN NOT NULL,
   output           TEXT,
-  hint             TEXT
+  hint             TEXT,
+  UNIQUE (run_id, assertion_index)
 );
+
+ALTER TABLE verdicts ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS idx_evals_user ON evals(user_id);
 CREATE INDEX IF NOT EXISTS idx_runs_eval ON runs(eval_id);
@@ -57,7 +63,8 @@ CREATE INDEX IF NOT EXISTS idx_verdicts_run ON verdicts(run_id);
 
 export interface UserRow {
   id: string;
-  github_id: number;
+  /** BIGINT values are returned as strings by node-postgres. */
+  github_id: string;
   login: string;
   avatar_url: string | null;
   created_at: string;
@@ -90,6 +97,7 @@ export interface VerdictRow {
   run_id: string;
   assertion_index: number;
   type: string;
+  name: string;
   passed: boolean;
   output: string | null;
   hint: string | null;

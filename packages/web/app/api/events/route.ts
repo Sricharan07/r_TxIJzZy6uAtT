@@ -1,44 +1,45 @@
-/**
- * Decision 11 — SSE live execution stream.
- *
- * Next.js 14 App Router route handler for `/api/events`. Streams a run's
- * AgentEvents to the report UI over Server-Sent Events.
- *
- * PRODUCTION: subscribes to the runner's live event channel (e.g. Redis
- * pub/sub forwarded from the Firecracker VM) and forwards each AgentEvent as it
- * is produced, closing when the run completes.
- *
- * HERE (MVP scaffold): no live runner exists in this sandbox, so we replay the
- * recorded events from the sample run (MOCK_RUN via getRun()) as SSE frames
- * with small fixed setTimeout pacing. The pacing delay is a constant, not a
- * time/random source, and the event data itself is fully deterministic.
- */
+import { getStore } from "@kiln/shared/store";
 
-import { getRun, MOCK_RUN } from "@kiln/shared";
+export const runtime = "nodejs";
 
-/** Fixed inter-frame delay (ms) used only to simulate live pacing. */
-const FRAME_DELAY_MS = 120;
+const POLL_MS = 250;
 
-export async function GET(_req: Request): Promise<Response> {
-  const run = getRun(MOCK_RUN.id) ?? MOCK_RUN;
-  const events = run.events;
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function GET(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+  if (!runId) {
+    return Response.json({ error: "runId is required" }, { status: 400 });
+  }
+
   const encoder = new TextEncoder();
-
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const sleep = (ms: number) =>
-        new Promise<void>((resolve) => setTimeout(resolve, ms));
+      let sent = 0;
+      for (;;) {
+        const run = await getStore().getRun(runId);
+        if (!run) {
+          controller.enqueue(encoder.encode(`event: error\ndata: {"message":"Run not found"}\n\n`));
+          controller.close();
+          return;
+        }
 
-      for (const event of events) {
-        // One SSE message per recorded AgentEvent. JSON-encoded so the client
-        // can reconstruct the typed event shape.
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-        await sleep(FRAME_DELAY_MS);
+        for (const event of run.events.slice(sent)) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        }
+        sent = run.events.length;
+
+        if (run.status === "completed" || run.status === "errored") {
+          controller.enqueue(encoder.encode(`event: done\ndata: {}\n\n`));
+          controller.close();
+          return;
+        }
+
+        await sleep(POLL_MS);
       }
-
-      // Terminal frame: signals the client that the run stream is complete.
-      controller.enqueue(encoder.encode(`event: done\ndata: {}\n\n`));
-      controller.close();
     },
   });
 

@@ -141,6 +141,8 @@ export interface RunResult {
 /** GitHub-authenticated user (Decision 8). */
 export interface User {
   id: string;
+  /** GitHub's numeric identity. Present for OAuth-backed users. */
+  githubId?: number;
   login: string;
   avatarUrl: string;
   createdAt: string;

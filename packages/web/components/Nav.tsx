@@ -4,8 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const LINKS = [
-  { href: "/reports/a3f9c2e1-8b47-4d2a", label: "Report", match: (p: string) => p.startsWith("/reports") && !p.endsWith("/diff") },
-  { href: "/reports/a3f9c2e1-8b47-4d2a/diff", label: "Diff", match: (p: string) => p.endsWith("/diff") },
   { href: "/evals/new", label: "New Eval", match: (p: string) => p.startsWith("/evals") },
   { href: "/", label: "Onboarding", match: (p: string) => p === "/" },
 ];
@@ -38,9 +36,9 @@ export function Nav() {
             {l.label}
           </Link>
         ))}
-        <div className="nav-user" title="Signed in with GitHub">
-          JK
-        </div>
+        <Link className="nav-user" title="Sign in with GitHub" href="/auth/github">
+          GH
+        </Link>
       </div>
     </nav>
   );

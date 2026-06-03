@@ -1,7 +1,9 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { getRun, summarize, formatDuration, type RunResult, type AgentType } from "@kiln/shared";
+import { summarize, formatDuration, type RunResult, type AgentType } from "@kiln/shared";
+import { getStore } from "@kiln/shared/store";
 import { ShareBar } from "../../../components/ShareBar";
+import { RunningReport } from "../../../components/RunningReport";
 
 const AGENT_LABEL: Record<AgentType, string> = {
   "claude-code": "Claude Code",
@@ -30,21 +32,28 @@ function shortDate(iso: string): string {
 }
 
 // OG card per report (Decision 13) — drives the Slack/PR unfurl.
-export function generateMetadata({ params }: { params: { id: string } }): Metadata {
-  const run = getRun(params.id);
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
+  const { id } = await params;
+  const run = await getStore().getRun(id);
   if (!run) return {};
   const { passed, total } = summarize(run);
-  const title = `${run.evalTitle} — ${passed}/${total} tests passed`;
+  const title =
+    run.errorType === null
+      ? `${run.evalTitle} — ${passed}/${total} tests passed`
+      : `${run.evalTitle} — platform error`;
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  const imageUrl = `${appUrl}/reports/${id}/og`;
   return {
     title,
-    openGraph: { title, images: [`/reports/${params.id}/og`] },
-    twitter: { card: "summary_large_image", title, images: [`/reports/${params.id}/og`] },
+    openGraph: { title, images: [imageUrl] },
+    twitter: { card: "summary_large_image", title, images: [imageUrl] },
   };
 }
 
 /** Report page — sticky summary + stats + verdicts + timeline (Decisions 6, 9). */
-export default function ReportPage({ params }: { params: { id: string } }) {
-  const run = getRun(params.id);
+export default async function ReportPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const run = await getStore().getRun(id);
   if (!run) {
     return (
       <div className="report-body">
@@ -57,11 +66,12 @@ export default function ReportPage({ params }: { params: { id: string } }) {
   if (run.errorType !== null) {
     return <PlatformError run={run} />;
   }
+  if (run.status === "pending" || run.status === "running") {
+    return <RunningReport run={run} />;
+  }
 
   const { passed, total, ok } = summarize(run);
-  const shown = run.events.slice(0, 5);
-  const moreSteps = Math.max(0, run.totalSteps - shown.length);
-  const reportUrl = `https://kiln.dev/report/${run.id}`;
+  const reportUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/reports/${run.id}`;
 
   return (
     <div>
@@ -78,8 +88,8 @@ export default function ReportPage({ params }: { params: { id: string } }) {
           </span>
         </div>
         <div className="report-actions">
-          <Link className="btn btn-ghost" href={`/evals/new?from=${run.evalId}`}>
-            Share
+          <Link className="btn btn-ghost" href={`/evals/${run.evalId}`}>
+            Eval Config
           </Link>
           <Link className="btn btn-primary" href={`/evals/new?from=${run.evalId}`}>
             Re-run Eval
@@ -131,6 +141,7 @@ export default function ReportPage({ params }: { params: { id: string } }) {
               <span className="verdict-name">{v.name}</span>
               {v.type === "llm" && <span className="verdict-llm">LLM judge</span>}
               {v.hint && <span className="verdict-hint">{v.hint}</span>}
+              {v.output && <pre className="verdict-output">{v.output}</pre>}
             </div>
           ))}
         </div>
@@ -138,7 +149,7 @@ export default function ReportPage({ params }: { params: { id: string } }) {
         {/* Execution timeline (Decisions 6, 11) */}
         <div className="section-title">Execution Timeline</div>
         <div className="timeline">
-          {shown.map((e, i) => {
+          {run.events.map((e, i) => {
             const isFail = e.kind === "fail";
             return (
               <div key={i}>
@@ -155,7 +166,6 @@ export default function ReportPage({ params }: { params: { id: string } }) {
               </div>
             );
           })}
-          {moreSteps > 0 && <button className="tl-more">⋯ {moreSteps} more steps</button>}
         </div>
       </div>
     </div>
@@ -166,7 +176,7 @@ export default function ReportPage({ params }: { params: { id: string } }) {
 function PlatformError({ run }: { run: RunResult }) {
   const reason =
     run.errorType === "timeout"
-      ? "The sandbox timed out after 5 minutes."
+      ? "The sandbox timed out before the agent could complete."
       : "An internal error occurred while running your eval.";
   return (
     <div>
@@ -189,7 +199,9 @@ function PlatformError({ run }: { run: RunResult }) {
           <Link className="btn btn-primary" href={`/evals/new?from=${run.evalId}`}>
             Retry (free)
           </Link>
-          <button className="btn btn-ghost">View Partial Trace</button>
+          <Link className="btn btn-ghost" href={`/api/events?runId=${run.id}`}>
+            View Partial Trace
+          </Link>
         </div>
       </div>
     </div>
