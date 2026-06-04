@@ -43,7 +43,8 @@ export class ClaudeCodeAgent implements Agent {
           binary: "claude",
           commandEnv: "KILN_CLAUDE_COMMAND",
           buildCommand: (prompt) =>
-            `claude -p ${shellQuote(prompt)} --output-format stream-json --verbose --dangerously-skip-permissions`,
+            `claude --bare -p ${shellQuote(prompt)} --output-format stream-json --verbose ` +
+            `--permission-mode acceptEdits --allowedTools Bash Read Edit Write MultiEdit Glob Grep LS WebFetch`,
         });
       } catch (err) {
         if (!(err instanceof AgentCliUnavailableError) || !allowLocalFallback()) throw err;
