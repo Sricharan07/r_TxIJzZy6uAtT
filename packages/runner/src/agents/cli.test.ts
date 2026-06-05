@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ExecResult, HttpResult, SandboxHandle } from "@kiln/grader";
+import type { ExecResult, HttpRequest, HttpResult, SandboxHandle } from "@kiln/grader";
 import type { EvalConfig } from "@kiln/shared";
 import { CodexAgent } from "./codex";
 import { getAgent } from "./registry";
@@ -32,8 +32,12 @@ class CliSandbox implements SandboxHandle {
     return null;
   }
 
-  async httpGet(): Promise<HttpResult> {
+  async httpRequest(_request: HttpRequest): Promise<HttpResult> {
     return { status: 200, body: "" };
+  }
+
+  async httpGet(url: string): Promise<HttpResult> {
+    return this.httpRequest({ url });
   }
 }
 

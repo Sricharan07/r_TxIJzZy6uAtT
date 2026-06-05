@@ -34,7 +34,13 @@ describe("executeRun", () => {
     expect(result.events.length).toBeGreaterThan(0);
     expect(streamed.length).toBe(result.events.length);
     expect(result.verdicts).toHaveLength(config.assertions.length);
+    expect(result.verdicts.every((v) => v.evidence?.length === 1)).toBe(true);
     expect(result.verdicts.every((v) => v.passed)).toBe(true);
+    expect(result.gradeReport).toMatchObject({
+      taskPassed: true,
+      score: { letter: "A+", runs: 1, passedRuns: 1 },
+      findings: [],
+    });
   });
 
   it("classifies a hard sandbox timeout separately from platform errors", async () => {

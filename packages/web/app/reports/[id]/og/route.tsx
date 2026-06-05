@@ -31,6 +31,8 @@ const YELLOW = "#f59e0b";
 
 function failureSummary(run: RunResult): string {
   if (run.errorType !== null) return "Run stopped due to a platform issue.";
+  const finding = run.gradeReport?.findings[0];
+  if (finding) return finding.evidence[0]?.customerExcerpt ?? finding.title;
   const failed = run.verdicts.find((v) => !v.passed);
   if (failed) return failed.hint ?? failed.output ?? "One or more assertions failed.";
   if (run.status === "pending" || run.status === "running") return "Eval is still running.";
@@ -70,12 +72,16 @@ export async function GET(
 
   const { passed, total, ok } = summarize(run);
   const failed = total - passed;
-  const badgeColor = run.errorType !== null ? YELLOW : ok ? GREEN : RED;
-  const badgeLabel = run.errorType !== null ? "PLATFORM ERROR" : ok ? "PASSED" : "FAILED";
+  const grade = run.gradeReport?.score.letter;
+  const reportPassed = run.gradeReport?.taskPassed ?? ok;
+  const badgeColor = run.errorType !== null ? YELLOW : reportPassed ? GREEN : RED;
+  const badgeLabel = run.errorType !== null ? "PLATFORM ERROR" : grade ? `GRADE ${grade}` : ok ? "PASSED" : "FAILED";
   const duration = formatDuration(run.durationSec);
   const subtitle =
     run.errorType !== null
       ? `Run interrupted · ${run.agentType} · ${duration}`
+      : run.gradeReport
+      ? `${Math.round(run.gradeReport.score.passRate * 100)}% pass rate · ${run.agentType} · ${duration}`
       : `${passed}/${total} tests passed · ${run.agentType} · ${duration}`;
 
   return new ImageResponse(

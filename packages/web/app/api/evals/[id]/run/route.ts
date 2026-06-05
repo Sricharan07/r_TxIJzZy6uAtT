@@ -1,5 +1,5 @@
 import { getStore } from "@kiln/shared/store";
-import { enqueueRun } from "../../../../../lib/jobs";
+import { createRunsForEval, enqueueRun } from "../../../../../lib/jobs";
 import { currentUserId } from "../../../../../lib/auth";
 
 export const runtime = "nodejs";
@@ -19,7 +19,13 @@ export async function POST(
   if (evalRecord.userId !== userId) {
     return Response.json({ error: "Only the eval owner can re-run this config directly" }, { status: 403 });
   }
-  const run = await store.createRun(evalRecord);
-  enqueueRun(evalRecord, run);
-  return Response.json({ runId: run.id, reportUrl: `/reports/${run.id}`, status: run.status });
+  const runs = await createRunsForEval(store, evalRecord);
+  for (const run of runs) enqueueRun(evalRecord, run);
+  const firstRun = runs[0]!;
+  return Response.json({
+    runId: firstRun.id,
+    runIds: runs.map((run) => run.id),
+    reportUrl: `/reports/${firstRun.id}`,
+    status: firstRun.status,
+  });
 }

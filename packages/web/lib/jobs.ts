@@ -1,6 +1,6 @@
 import { executeRun } from "@kiln/runner";
-import type { Eval, RunResult } from "@kiln/shared";
-import { getStore } from "@kiln/shared/store";
+import { aggregateCompletedRunReports, type Eval, type EvalConfig, type RunResult } from "@kiln/shared";
+import { getStore, type KilnStore } from "@kiln/shared/store";
 import { Queue } from "bullmq";
 
 const globalJobs = globalThis as typeof globalThis & { __kilnJobs?: Set<string> };
@@ -30,6 +30,32 @@ async function saveStatus(run: RunResult, status: RunResult["status"]): Promise<
     status,
     startedAt: status === "running" ? new Date().toISOString() : run.startedAt,
   });
+}
+
+export function runCountForEval(config: EvalConfig): number {
+  const requested = config.metadata.requestedRuns;
+  if (requested !== undefined) return Math.min(10, Math.max(1, Math.floor(requested)));
+  return process.env.NODE_ENV === "production" ? 3 : 1;
+}
+
+export async function createRunsForEval(store: KilnStore, evalRecord: Eval): Promise<RunResult[]> {
+  const count = runCountForEval(evalRecord.config);
+  const runs: RunResult[] = [];
+  for (let i = 0; i < count; i++) {
+    runs.push(await store.createRun(evalRecord));
+  }
+  return runs;
+}
+
+async function refreshEvalGradeReports(evalRecord: Eval): Promise<void> {
+  const store = getStore();
+  const runs = await store.listRuns(evalRecord.id);
+  const updated = aggregateCompletedRunReports(runs, runCountForEval(evalRecord.config));
+  for (const run of updated) {
+    if (run.gradeReport && runs.find((existing) => existing.id === run.id)?.gradeReport !== run.gradeReport) {
+      await store.saveRun(run);
+    }
+  }
 }
 
 export function enqueueRun(evalRecord: Eval, run: RunResult): void {
@@ -63,6 +89,7 @@ export function enqueueRun(evalRecord: Eval, run: RunResult): void {
         },
       });
       await getStore().saveRun(result);
+      await refreshEvalGradeReports(evalRecord);
     } catch (err) {
       await getStore().saveRun({
         ...run,
@@ -80,6 +107,7 @@ export function enqueueRun(evalRecord: Eval, run: RunResult): void {
         ],
         verdicts: [],
       });
+      await refreshEvalGradeReports(evalRecord);
     } finally {
       active.delete(run.id);
     }

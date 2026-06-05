@@ -22,6 +22,13 @@ export interface HttpResult {
   body: string;
 }
 
+export interface HttpRequest {
+  url: string;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  headers?: Record<string, string>;
+  body?: string;
+}
+
 /**
  * Read-only-ish handle the grader uses to probe a finished sandbox.
  *
@@ -34,6 +41,8 @@ export interface SandboxHandle {
   exec(cmd: string, cwd?: string): Promise<ExecResult>;
   /** Return file contents, or `null` if the file does not exist. */
   readFile(path: string): Promise<string | null>;
+  /** Issue an HTTP request to a URL reachable from inside the sandbox. */
+  httpRequest(request: HttpRequest): Promise<HttpResult>;
   /** Issue an HTTP GET to a URL reachable from inside the sandbox. */
   httpGet(url: string): Promise<HttpResult>;
 }

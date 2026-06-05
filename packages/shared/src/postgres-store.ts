@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Pool, type QueryResultRow } from "pg";
 import { SCHEMA_SQL, type EvalRow, type RunRow, type UserRow, type VerdictRow } from "./db/schema.js";
 import { getBlobStore, type BlobStore } from "./s3.js";
-import type { Eval, EvalConfig, RunResult, User, Verdict } from "./types.js";
+import type { Eval, EvalConfig, GradeReport, GraderEvidence, RunResult, User, Verdict } from "./types.js";
 import type { EvalSummary, KilnStore } from "./store.js";
 import { MOCK_USER } from "./mock.js";
 
@@ -50,6 +50,7 @@ function toVerdict(row: VerdictRow): Verdict {
     passed: row.passed,
     output: row.output ?? undefined,
     hint: row.hint ?? undefined,
+    evidence: row.evidence ? (row.evidence as GraderEvidence[]) : undefined,
   };
 }
 
@@ -172,7 +173,8 @@ export class PostgresKilnStore implements KilnStore {
       await client.query(
         `UPDATE runs
          SET agent_type = $2, status = $3, error_type = $4, started_at = $5,
-             finished_at = $6, total_steps = $7, tokens = $8, trace_s3_key = $9
+             finished_at = $6, total_steps = $7, tokens = $8, trace_s3_key = $9,
+             grade_report = $10
          WHERE id = $1`,
         [
           run.id,
@@ -184,13 +186,14 @@ export class PostgresKilnStore implements KilnStore {
           run.totalSteps,
           run.tokens,
           traceKey,
+          run.gradeReport ?? null,
         ],
       );
       await client.query("DELETE FROM verdicts WHERE run_id = $1", [run.id]);
       for (const verdict of run.verdicts) {
         await client.query(
-          `INSERT INTO verdicts (run_id, assertion_index, type, name, passed, output, hint)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          `INSERT INTO verdicts (run_id, assertion_index, type, name, passed, output, hint, evidence)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
           [
             run.id,
             verdict.assertionIndex,
@@ -199,6 +202,7 @@ export class PostgresKilnStore implements KilnStore {
             verdict.passed,
             verdict.output ?? null,
             verdict.hint ?? null,
+            verdict.evidence ?? null,
           ],
         );
       }
@@ -228,6 +232,7 @@ export class PostgresKilnStore implements KilnStore {
     events: RunResult["events"],
     verdicts: Verdict[],
   ): RunResult {
+    const gradeReport = row.grade_report ? (row.grade_report as GradeReport) : undefined;
     return {
       id: row.id,
       evalId: row.eval_id,
@@ -243,6 +248,7 @@ export class PostgresKilnStore implements KilnStore {
       tokens: row.tokens,
       events,
       verdicts,
+      gradeReport,
     };
   }
 

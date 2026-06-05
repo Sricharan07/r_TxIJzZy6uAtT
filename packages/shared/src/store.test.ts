@@ -95,13 +95,67 @@ describe("PostgresKilnStore", () => {
       totalSteps: 1,
       tokens: 10,
       events: [{ t: 8, kind: "file", text: "Created checkout.ts" }],
-      verdicts: [{ assertionIndex: 0, type: "file", name: "checkout exists", passed: true }],
+      verdicts: [
+        {
+          assertionIndex: 0,
+          type: "file",
+          name: "checkout exists",
+          passed: true,
+          evidence: [
+            {
+              type: "deterministic",
+              confidence: 1,
+              replayCmd: "test -f 'src/checkout.ts'",
+              redactionStatus: "clean",
+              customerExcerpt: "Assertion passed.",
+              observedAt: "2026-06-01T00:00:08.000Z",
+            },
+          ],
+        },
+      ],
+      gradeReport: {
+        runId: "2648744e-91ec-49b9-ad8d-28cf7f315c1d",
+        taskSpecId: "task_test",
+        mode: "integration-build",
+        buildPhase: "slice-1",
+        taskPassed: true,
+        generatedAt: "2026-06-01T00:00:08.000Z",
+        score: {
+          raw: 100,
+          capped: 100,
+          letter: "A+",
+          passRate: 1,
+          confidenceInterval: { low: 0.21, high: 1 },
+          runs: 1,
+          passedRuns: 1,
+        },
+        findings: [],
+        agentMatrix: [
+          {
+            agentType: "claude-code",
+            modelId: "test-model",
+            runs: 1,
+            passedRuns: 1,
+            passRate: 1,
+          },
+        ],
+        definitionOfDone: [
+          {
+            id: "replayable-evidence",
+            label: "Replayable evidence",
+            passed: true,
+            detail: "Every finding has a replay command.",
+          },
+        ],
+      },
     };
 
     await store.saveRun(run);
 
     expect(traces[run.id]).toEqual(run.events);
     expect(sql.some((text) => text.includes("UPDATE runs"))).toBe(true);
+    expect(sql.some((text) => text.includes("grade_report"))).toBe(true);
     expect(sql.some((text) => text.includes("INSERT INTO verdicts"))).toBe(true);
+    expect(sql.some((text) => text.includes("evidence"))).toBe(true);
   });
 });

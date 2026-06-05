@@ -184,7 +184,7 @@ export class JsonKilnStore implements KilnStore {
   private async persist(state: StoreState): Promise<void> {
     this.state = state;
     await mkdir(dirname(this.filePath), { recursive: true });
-    const tmp = `${this.filePath}.${process.pid}.tmp`;
+    const tmp = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(tmp, JSON.stringify(state, null, 2));
     await rename(tmp, this.filePath);
   }

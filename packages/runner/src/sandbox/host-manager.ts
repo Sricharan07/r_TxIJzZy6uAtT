@@ -12,7 +12,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExecResult, HttpResult } from "@kiln/grader";
+import type { ExecResult, HttpRequest, HttpResult } from "@kiln/grader";
 
 interface BootedVm {
   id: string;
@@ -29,6 +29,7 @@ export interface FirecrackerDriver {
   exec(id: string, cmd: string, cwd?: string): Promise<ExecResult>;
   execStreaming(id: string, cmd: string, cwd: string | undefined, onLine: ExecLineHandler): Promise<ExecResult>;
   readFile(id: string, path: string): Promise<string | null>;
+  httpRequest(id: string, request: HttpRequest): Promise<HttpResult>;
   httpGet(id: string, url: string): Promise<HttpResult>;
   teardown(id: string): Promise<void>;
 }
@@ -245,7 +246,30 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
   }
 
   async httpGet(id: string, url: string): Promise<HttpResult> {
-    const result = await this.ssh(id, `curl -sS -L --max-time 20 -w '\\n%{http_code}' ${shellQuote(url)}`);
+    return this.httpRequest(id, { url });
+  }
+
+  async httpRequest(id: string, request: HttpRequest): Promise<HttpResult> {
+    const method = request.method ?? "GET";
+    const headers = Object.entries(request.headers ?? {}).flatMap(([name, value]) => [
+      "-H",
+      `${name}: ${value}`,
+    ]);
+    const args = [
+      "curl",
+      "-sS",
+      "-L",
+      "--max-time",
+      "20",
+      "-w",
+      "\\n%{http_code}",
+      "-X",
+      method,
+      ...headers,
+      ...(request.body === undefined ? [] : ["--data-binary", request.body]),
+      request.url,
+    ];
+    const result = await this.ssh(id, args.map(shellQuote).join(" "));
     if (result.code !== 0) return { status: 0, body: result.stderr };
     const boundary = result.stdout.lastIndexOf("\n");
     return {
@@ -393,7 +417,12 @@ export function createHostManagerServer(driver: FirecrackerDriver, token?: strin
       }
       if (req.method === "POST" && action === "/http-get") {
         const body = await jsonBody(req);
-        send(res, 200, await driver.httpGet(id, String(body.url ?? "")));
+        send(res, 200, await driver.httpRequest(id, {
+          url: String(body.url ?? ""),
+          method: body.method ? String(body.method) as HttpRequest["method"] : undefined,
+          headers: typeof body.headers === "object" && body.headers !== null ? body.headers as Record<string, string> : undefined,
+          body: typeof body.body === "string" ? body.body : undefined,
+        }));
         return;
       }
       send(res, 404, { error: "Not found" });

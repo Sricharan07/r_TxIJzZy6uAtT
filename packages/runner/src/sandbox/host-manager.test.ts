@@ -1,6 +1,7 @@
 import { type AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { FirecrackerSandbox } from "./firecracker";
+import type { HttpRequest } from "@kiln/grader";
 import { createHostManagerServer, type FirecrackerDriver } from "./host-manager";
 
 class FakeDriver implements FirecrackerDriver {
@@ -32,7 +33,10 @@ class FakeDriver implements FirecrackerDriver {
     return "readme";
   }
   async httpGet(id: string, url: string): Promise<{ status: number; body: string }> {
-    this.calls.push(`http:${id}:${url}`);
+    return this.httpRequest(id, { url });
+  }
+  async httpRequest(id: string, request: HttpRequest): Promise<{ status: number; body: string }> {
+    this.calls.push(`http:${id}:${request.method ?? "GET"}:${request.url}`);
     return { status: 200, body: "healthy" };
   }
   async teardown(id: string): Promise<void> {
@@ -67,6 +71,7 @@ describe("Firecracker host manager API", () => {
     expect(lines).toEqual(["first"]);
     expect(await sandbox.readFile("README.md")).toBe("readme");
     expect(await sandbox.httpGet("https://api.example/health")).toMatchObject({ status: 200 });
+    expect(await sandbox.httpRequest({ url: "https://api.example/webhook", method: "POST", body: "{}" })).toMatchObject({ status: 200 });
     await sandbox.teardown();
 
     expect(driver.calls).toEqual([
@@ -75,7 +80,8 @@ describe("Firecracker host manager API", () => {
       "exec:run-1:npm test",
       "stream:run-1:npm test",
       "read:run-1:README.md",
-      "http:run-1:https://api.example/health",
+      "http:run-1:GET:https://api.example/health",
+      "http:run-1:POST:https://api.example/webhook",
       "teardown:run-1",
     ]);
   });

@@ -46,6 +46,7 @@ describe("FirecrackerSandbox", () => {
     expect(lines).toEqual(["first"]);
     expect(await sandbox.readFile("README.md")).toBe("contents");
     expect(await sandbox.httpGet("https://api.example/health")).toEqual({ status: 200, body: "healthy" });
+    expect(await sandbox.httpRequest({ url: "https://api.example/webhook", method: "POST", body: "{}" })).toEqual({ status: 200, body: "healthy" });
     await sandbox.teardown();
 
     expect(calls.map((call) => call.init.method ?? "GET")).toEqual([
@@ -54,6 +55,7 @@ describe("FirecrackerSandbox", () => {
       "POST",
       "POST",
       "GET",
+      "POST",
       "POST",
       "DELETE",
     ]);

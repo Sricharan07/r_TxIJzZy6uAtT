@@ -11,7 +11,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import type { SandboxHandle, ExecResult, HttpResult } from "@kiln/grader";
+import type { SandboxHandle, ExecResult, HttpRequest, HttpResult } from "@kiln/grader";
 
 const exec = promisify(execCb);
 type SandboxState = "created" | "booted" | "torn-down";
@@ -143,9 +143,17 @@ export class LocalSandbox implements RunnerSandbox {
   }
 
   async httpGet(url: string): Promise<HttpResult> {
+    return this.httpRequest({ url });
+  }
+
+  async httpRequest(request: HttpRequest): Promise<HttpResult> {
     this.assertBooted();
     try {
-      const res = await fetch(url);
+      const res = await fetch(request.url, {
+        method: request.method ?? "GET",
+        headers: request.headers,
+        body: request.body,
+      });
       return { status: res.status, body: await res.text() };
     } catch (err) {
       return { status: 0, body: err instanceof Error ? err.message : String(err) };
@@ -281,9 +289,13 @@ export class FirecrackerSandbox implements RunnerSandbox {
   }
 
   async httpGet(url: string): Promise<HttpResult> {
+    return this.httpRequest({ url });
+  }
+
+  async httpRequest(request: HttpRequest): Promise<HttpResult> {
     return this.request<HttpResult>(this.path("/http-get"), {
       method: "POST",
-      body: JSON.stringify({ url }),
+      body: JSON.stringify(request),
     });
   }
 

@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS runs (
   finished_at   TIMESTAMPTZ,
   total_steps   INTEGER NOT NULL DEFAULT 0,
   tokens        INTEGER NOT NULL DEFAULT 0,
-  trace_s3_key  TEXT                             -- full AgentEvent[] trace in S3 (Decision 7)
+  trace_s3_key  TEXT,                            -- full AgentEvent[] trace in S3 (Decision 7)
+  grade_report  JSONB
 );
 
 -- Decision 5/6: one graded assertion outcome per row
@@ -51,10 +52,13 @@ CREATE TABLE IF NOT EXISTS verdicts (
   passed           BOOLEAN NOT NULL,
   output           TEXT,
   hint             TEXT,
+  evidence         JSONB,
   UNIQUE (run_id, assertion_index)
 );
 
 ALTER TABLE verdicts ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+ALTER TABLE verdicts ADD COLUMN IF NOT EXISTS evidence JSONB;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS grade_report JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_evals_user ON evals(user_id);
 CREATE INDEX IF NOT EXISTS idx_runs_eval ON runs(eval_id);
@@ -90,6 +94,7 @@ export interface RunRow {
   total_steps: number;
   tokens: number;
   trace_s3_key: string | null;
+  grade_report: unknown | null;
 }
 
 export interface VerdictRow {
@@ -101,4 +106,5 @@ export interface VerdictRow {
   passed: boolean;
   output: string | null;
   hint: string | null;
+  evidence: unknown | null;
 }

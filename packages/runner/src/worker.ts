@@ -11,8 +11,16 @@
  * module imports and runs cleanly WITHOUT Redis. The actual work lives in the
  * pure {@link executeRun} function, which is fully exercisable in-process.
  */
-import type { EvalConfig, RunResult, AgentEvent, Verdict } from "@kiln/shared";
-import { grade } from "@kiln/grader";
+import {
+  aggregateCompletedRunReports,
+  type AgentEvent,
+  type Eval,
+  type EvalConfig,
+  type GradeReport,
+  type RunResult,
+  type Verdict,
+} from "@kiln/shared";
+import { gradeWithReport } from "@kiln/grader";
 import { Worker } from "bullmq";
 import { getStore } from "@kiln/shared/store";
 import { getAgent } from "./agents/registry.js";
@@ -36,6 +44,23 @@ export interface ExecuteRunOptions {
 interface RunJob {
   evalId: string;
   runId: string;
+}
+
+function runCountForEval(config: EvalConfig): number {
+  const requested = config.metadata.requestedRuns;
+  if (requested !== undefined) return Math.min(10, Math.max(1, Math.floor(requested)));
+  return process.env.NODE_ENV === "production" ? 3 : 1;
+}
+
+async function refreshEvalGradeReports(evalRecord: Eval): Promise<void> {
+  const store = getStore();
+  const runs = await store.listRuns(evalRecord.id);
+  const updated = aggregateCompletedRunReports(runs, runCountForEval(evalRecord.config));
+  for (const run of updated) {
+    if (run.gradeReport && runs.find((existing) => existing.id === run.id)?.gradeReport !== run.gradeReport) {
+      await store.saveRun(run);
+    }
+  }
 }
 
 function redisConnection() {
@@ -157,6 +182,7 @@ export async function executeRun(
   let events: AgentEvent[] = [];
   let streamedEventCount = 0;
   let verdicts: Verdict[] = [];
+  let gradeReport: GradeReport | undefined;
   let tokens = 0;
   let totalSteps = 0;
   let errorType: RunResult["errorType"] = null;
@@ -194,7 +220,17 @@ export async function executeRun(
 
     // Grade the finished sandbox (Decision 5). The grader inspects the same
     // SandboxHandle the agent mutated and returns one verdict per assertion.
-    verdicts = await grade(config.assertions, sandbox);
+    const grading = await gradeWithReport(config, sandbox, {
+      runId: id,
+      events,
+      runStats: {
+        durationSec: events.length ? Math.max(...events.map((event) => event.t)) : 0,
+        totalSteps,
+        tokens,
+      },
+    });
+    verdicts = grading.verdicts;
+    gradeReport = grading.gradeReport;
     status = "completed";
   } catch (err) {
     // Decision 18: classify our own failures as platform errors.
@@ -244,6 +280,7 @@ export async function executeRun(
     tokens,
     events,
     verdicts,
+    gradeReport,
   };
 }
 
@@ -281,6 +318,7 @@ export async function startWorker(): Promise<void> {
         },
       });
       await store.saveRun(result);
+      await refreshEvalGradeReports(evalRecord);
       return result;
     },
     { connection: redisConnection() },

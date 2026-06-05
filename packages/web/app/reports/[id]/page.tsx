@@ -1,6 +1,14 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { summarize, formatDuration, type RunResult, type AgentType } from "@kiln/shared";
+import {
+  summarize,
+  formatDuration,
+  type AgentType,
+  type Finding,
+  type GradeReport,
+  type RunResult,
+  type Severity,
+} from "@kiln/shared";
 import { getStore } from "@kiln/shared/store";
 import { ShareBar } from "../../../components/ShareBar";
 import { RunningReport } from "../../../components/RunningReport";
@@ -31,6 +39,18 @@ function shortDate(iso: string): string {
   });
 }
 
+function pct(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function score(value: number): string {
+  return Math.round(value).toString();
+}
+
+function severityClass(severity: Severity): string {
+  return `severity-${severity}`;
+}
+
 // OG card per report (Decision 13) — drives the Slack/PR unfurl.
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const { id } = await params;
@@ -38,7 +58,9 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   if (!run) return {};
   const { passed, total } = summarize(run);
   const title =
-    run.errorType === null
+    run.gradeReport
+      ? `${run.evalTitle} — Grade ${run.gradeReport.score.letter}`
+      : run.errorType === null
       ? `${run.evalTitle} — ${passed}/${total} tests passed`
       : `${run.evalTitle} — platform error`;
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
@@ -71,6 +93,9 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
   }
 
   const { passed, total, ok } = summarize(run);
+  const report = run.gradeReport;
+  const passedLabel = report ? `GRADE ${report.score.letter}` : ok ? "PASSED" : "FAILED";
+  const passedClass = report ? (report.taskPassed ? "badge-pass" : "badge-fail") : ok ? "badge-pass" : "badge-fail";
   const reportUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/reports/${run.id}`;
 
   return (
@@ -78,9 +103,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
       {/* Sticky summary (Decision 9) */}
       <div className="report-sticky">
         <div className="report-sticky-left">
-          <span className={`badge ${ok ? "badge-pass" : "badge-fail"}`}>
-            {ok ? "PASSED" : "FAILED"}
-          </span>
+          <span className={`badge ${passedClass}`}>{passedLabel}</span>
           <span className="report-title">{run.evalTitle}</span>
           <span className="report-meta">
             {shortDuration(run.durationSec)} · {agentLabel(run.agentType)} ·{" "}
@@ -102,30 +125,36 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
 
       <div className="report-body">
         {/* Stats grid (Decision 9) */}
-        <div className="stats-grid">
-          <div className="stat-card">
-            <div className="stat-label">Tests</div>
-            <div className="stat-value">
-              <span style={{ color: "var(--green)" }}>{passed}</span>{" "}
-              <span style={{ color: "var(--text-dim)" }}>/</span> {total}
+        {report ? (
+          <GradeSummary report={report} run={run} />
+        ) : (
+          <div className="stats-grid">
+            <div className="stat-card">
+              <div className="stat-label">Tests</div>
+              <div className="stat-value">
+                <span style={{ color: "var(--green)" }}>{passed}</span>{" "}
+                <span style={{ color: "var(--text-dim)" }}>/</span> {total}
+              </div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Agent Steps</div>
+              <div className="stat-value">{run.totalSteps}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Duration</div>
+              <div className="stat-value">{formatDuration(run.durationSec)}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Tokens</div>
+              <div className="stat-value">{Math.round(run.tokens / 1000)}k</div>
             </div>
           </div>
-          <div className="stat-card">
-            <div className="stat-label">Agent Steps</div>
-            <div className="stat-value">{run.totalSteps}</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">Duration</div>
-            <div className="stat-value">{formatDuration(run.durationSec)}</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">Tokens</div>
-            <div className="stat-value">{Math.round(run.tokens / 1000)}k</div>
-          </div>
-        </div>
+        )}
+
+        {report && <GradeDetails report={report} />}
 
         {/* Verdicts (Decisions 5, 6) */}
-        <div className="section-title">Test Verdicts</div>
+        <div className="section-title">Assertion Verdicts</div>
         <div className="verdicts">
           {run.verdicts.map((v) => (
             <div
@@ -168,6 +197,159 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
           })}
         </div>
       </div>
+    </div>
+  );
+}
+
+function GradeSummary({ report, run }: { report: GradeReport; run: RunResult }) {
+  const cap = report.score.cap;
+  return (
+    <div className="stats-grid grade-stats">
+      <div className="stat-card">
+        <div className="stat-label">Grade</div>
+        <div className={`stat-value grade-value ${report.taskPassed ? "pass" : "fail"}`}>
+          {report.score.letter}
+        </div>
+      </div>
+      <div className="stat-card">
+        <div className="stat-label">Raw Score</div>
+        <div className="stat-value">{score(report.score.raw)}</div>
+        {cap && (
+          <div className="stat-subtle">
+            capped at {cap.maxGrade} · {cap.reason}
+          </div>
+        )}
+      </div>
+      <div className="stat-card">
+        <div className="stat-label">Pass Rate</div>
+        <div className="stat-value">{pct(report.score.passRate)}</div>
+        <div className="stat-subtle">
+          CI {pct(report.score.confidenceInterval.low)}-{pct(report.score.confidenceInterval.high)}
+        </div>
+      </div>
+      <div className="stat-card">
+        <div className="stat-label">Runs</div>
+        <div className="stat-value">
+          {report.score.passedRuns}/{report.runGroup?.expectedRuns ?? report.score.runs}
+        </div>
+        {report.runGroup && (
+          <div className="stat-subtle">
+            {report.runGroup.completedRuns}/{report.runGroup.expectedRuns} complete · {report.runGroup.status}
+          </div>
+        )}
+      </div>
+      <div className="stat-card">
+        <div className="stat-label">Findings</div>
+        <div className="stat-value">{report.findings.length}</div>
+      </div>
+      <div className="stat-card">
+        <div className="stat-label">Tokens</div>
+        <div className="stat-value">{Math.round(run.tokens / 1000)}k</div>
+      </div>
+    </div>
+  );
+}
+
+function GradeDetails({ report }: { report: GradeReport }) {
+  return (
+    <>
+      <div className="section-title">Agent / Model Matrix</div>
+      <div className="agent-matrix">
+        {report.agentMatrix.map((row) => (
+          <div key={`${row.agentType}-${row.modelId}`} className="agent-matrix-row">
+            <span>{agentLabel(row.agentType)}</span>
+            <span>{row.modelId}</span>
+            <span>
+              {row.passedRuns}/{row.runs} passed
+            </span>
+            <span>{pct(row.passRate)}</span>
+          </div>
+        ))}
+      </div>
+
+      {report.stability && (
+        <>
+          <div className="section-title">Stability</div>
+          <div className={`stability ${report.stability.stable ? "stable" : "unstable"}`}>
+            <strong>{report.stability.stable ? "Stable" : "Variance Flagged"}</strong>
+            <span>{report.stability.note}</span>
+          </div>
+        </>
+      )}
+
+      {report.traceMetrics && (
+        <>
+          <div className="section-title">Trace Metrics</div>
+          <div className="trace-metrics">
+            <span>steps {report.traceMetrics.totalSteps}</span>
+            <span>tokens {Math.round(report.traceMetrics.tokens / 1000)}k</span>
+            <span>retries {report.traceMetrics.retryCount}</span>
+            <span>loops {report.traceMetrics.loopOnSameErrorCount}</span>
+            <span>API errors {report.traceMetrics.apiErrorCount}</span>
+            <span>rescues {report.traceMetrics.humanRescueCount}</span>
+          </div>
+        </>
+      )}
+
+      <div className="section-title">Findings</div>
+      {report.findings.length === 0 ? (
+        <div className="empty-findings">No confirmed or advisory findings.</div>
+      ) : (
+        <div className="findings">
+          {report.findings.map((finding) => (
+            <FindingRow key={finding.id} finding={finding} />
+          ))}
+        </div>
+      )}
+
+      {report.remediationProjection && (
+        <div className="projection">
+          <span className="projection-grade">{report.score.letter}</span>
+          <span className="projection-arrow">→</span>
+          <span className="projection-grade">{report.remediationProjection.letter}</span>
+          <span>{report.remediationProjection.summary}</span>
+        </div>
+      )}
+
+      <div className="section-title">Slice 1 Gate</div>
+      <div className="definition-checks">
+        {report.definitionOfDone.map((check) => (
+          <div key={check.id} className={`definition-check ${check.passed ? "pass" : "fail"}`}>
+            <span>{check.passed ? "✓" : "✗"}</span>
+            <strong>{check.label}</strong>
+            <em>{check.detail}</em>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function FindingRow({ finding }: { finding: Finding }) {
+  return (
+    <div className={`finding-row ${finding.status}`}>
+      <div className="finding-header">
+        <span className={`severity-pill ${severityClass(finding.severity)}`}>
+          {finding.severity}
+        </span>
+        <span className="finding-title">{finding.title}</span>
+        <span className="finding-code">{finding.code}</span>
+        <span className="finding-status">{finding.status}</span>
+      </div>
+      {finding.hardCapGrade && (
+        <div className="finding-cap">Hard cap: maximum grade {finding.hardCapGrade}</div>
+      )}
+      {finding.evidence.map((evidence, idx) => (
+        <div key={`${finding.id}-evidence-${idx}`} className="evidence-block">
+          <div className="evidence-meta">
+            <span>{evidence.type}</span>
+            <span>{Math.round(evidence.confidence * 100)}% confidence</span>
+            <span>{evidence.redactionStatus}</span>
+          </div>
+          <pre className="replay-cmd">{evidence.replayCmd}</pre>
+          <pre className="customer-excerpt">{evidence.customerExcerpt}</pre>
+        </div>
+      ))}
     </div>
   );
 }

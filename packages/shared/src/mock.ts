@@ -3,7 +3,7 @@
  * renders real, type-checked data without a live Postgres/runner. In production
  * these rows come from the DB; the shapes are identical.
  */
-import type { Eval, RunResult, User } from "./types.js";
+import type { Eval, GradeReport, RunResult, User } from "./types.js";
 
 export const MOCK_USER: User = {
   id: "u_jk",
@@ -37,6 +37,158 @@ export const MOCK_EVAL: Eval = {
 };
 
 const EVAL_TITLE = "Acme Payments SDK — Checkout Integration";
+
+const MOCK_GRADE_REPORT: GradeReport = {
+  runId: "a3f9c2e1-8b47-4d2a",
+  taskSpecId: "task_mock_checkout",
+  mode: "integration-build",
+  buildPhase: "slice-1",
+  taskPassed: false,
+  generatedAt: "2026-06-01T14:32:34.000Z",
+  score: {
+    raw: 0,
+    capped: 0,
+    letter: "F",
+    passRate: 0,
+    confidenceInterval: { low: 0, high: 0.79 },
+    runs: 1,
+    passedRuns: 0,
+  },
+  agentMatrix: [
+    {
+      agentType: "claude-code",
+      modelId: "unknown",
+      runs: 1,
+      passedRuns: 0,
+      passRate: 0,
+    },
+  ],
+  traceMetrics: {
+    durationSec: 154,
+    totalSteps: 17,
+    tokens: 48000,
+    retryCount: 1,
+    loopOnSameErrorCount: 1,
+    humanRescueCount: 0,
+    apiErrorCount: 1,
+    sdkDiscoveryEvents: 3,
+    handRolledIndicators: 1,
+  },
+  definitionOfDone: [
+    {
+      id: "replayable-evidence",
+      label: "Replayable evidence",
+      passed: true,
+      detail: "Every finding has a replay command.",
+    },
+    {
+      id: "redaction",
+      label: "Safe excerpts",
+      passed: true,
+      detail: "Evidence excerpts carry an explicit redaction status.",
+    },
+    {
+      id: "judge-advisory",
+      label: "Judge advisory only",
+      passed: true,
+      detail: "Judge findings cannot hard-cap or decide pass/fail.",
+    },
+    {
+      id: "stability",
+      label: "Rerun stability",
+      passed: true,
+      detail: "Only one completed run is available.",
+    },
+  ],
+  findings: [
+    {
+      id: "a3f9c2e1-8b47-4d2a:finding:3",
+      runId: "a3f9c2e1-8b47-4d2a",
+      taskSpecId: "task_mock_checkout",
+      code: "expected_artifact_missing",
+      title: "Webhook handler registered",
+      severity: "high",
+      status: "confirmed",
+      canHardCap: false,
+      codeVsNoCode: "code",
+      evidence: [
+        {
+          type: "deterministic",
+          confidence: 1,
+          replayCmd: "grep -F -- 'webhooks.listen' 'src/webhook.ts'",
+          redactionStatus: "clean",
+          customerExcerpt: "Expected src/webhook.ts to call webhooks.listen(); not found.",
+          observedAt: "2026-06-01T14:32:34.000Z",
+        },
+      ],
+    },
+    {
+      id: "a3f9c2e1-8b47-4d2a:finding:4",
+      runId: "a3f9c2e1-8b47-4d2a",
+      taskSpecId: "task_mock_checkout",
+      code: "llm_judge_advisory",
+      title: "Code follows SDK patterns",
+      severity: "medium",
+      status: "advisory",
+      canHardCap: false,
+      codeVsNoCode: "mixed",
+      evidence: [
+        {
+          type: "judge",
+          confidence: 0.45,
+          replayCmd: "test -f README.md && sed -n '1,160p' README.md",
+          redactionStatus: "clean",
+          customerExcerpt: "The handler uses registerEndpoint(), which the SDK does not export.",
+          observedAt: "2026-06-01T14:32:34.000Z",
+        },
+      ],
+    },
+  ],
+  remediationProjection: {
+    score: 100,
+    letter: "A+",
+    summary:
+      "Fixing 1 confirmed finding would project this task to A+ if all deterministic assertions then pass.",
+  },
+};
+
+const MOCK_GRADE_REPORT_FIXED: GradeReport = {
+  ...MOCK_GRADE_REPORT,
+  runId: "b7e2d4a8-1f93-4c6b",
+  taskPassed: true,
+  generatedAt: "2026-06-02T10:17:05.000Z",
+  score: {
+    raw: 100,
+    capped: 100,
+    letter: "A+",
+    passRate: 1,
+    confidenceInterval: { low: 0.21, high: 1 },
+    runs: 1,
+    passedRuns: 1,
+  },
+  agentMatrix: [
+    {
+      agentType: "claude-code",
+      modelId: "unknown",
+      runs: 1,
+      passedRuns: 1,
+      passRate: 1,
+    },
+  ],
+  traceMetrics: {
+    durationSec: 125,
+    totalSteps: 14,
+    tokens: 41000,
+    retryCount: 0,
+    loopOnSameErrorCount: 0,
+    humanRescueCount: 0,
+    apiErrorCount: 0,
+    sdkDiscoveryEvents: 3,
+    handRolledIndicators: 0,
+  },
+  findings: [],
+  remediationProjection: undefined,
+};
 
 /** The failing baseline run shown on the report screen (Decision 6/9). */
 export const MOCK_RUN: RunResult = {
@@ -73,6 +225,7 @@ export const MOCK_RUN: RunResult = {
       output: "The handler uses registerEndpoint(), which the SDK does not export.",
     },
   ],
+  gradeReport: MOCK_GRADE_REPORT,
   events: [
     { t: 0, kind: "command", text: "Installed acme-payments-sdk@3.2.1" },
     { t: 12, kind: "info", text: "Created client with API key" },
@@ -106,6 +259,7 @@ export const MOCK_RUN_FIXED: RunResult = {
   verdicts: MOCK_RUN.verdicts.map((v) =>
     v.passed ? v : { ...v, passed: true, hint: undefined, output: undefined }
   ),
+  gradeReport: MOCK_GRADE_REPORT_FIXED,
 };
 
 /** A platform-error run for the error state (Decision 18). */
@@ -116,6 +270,7 @@ export const MOCK_RUN_ERROR: RunResult = {
   errorType: "timeout",
   finishedAt: null,
   verdicts: [],
+  gradeReport: undefined,
   events: MOCK_RUN.events.slice(0, 3),
 };
 

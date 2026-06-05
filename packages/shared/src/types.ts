@@ -16,6 +16,46 @@ export type AgentType = "claude-code" | "codex" | "cursor";
 /** Where a piece of context comes from (Decision 15). */
 export type ContextSourceType = "url" | "repo" | "file" | "paste";
 
+/** Grading mode from the grading specification. Slice 1 implements integration-build. */
+export type GradeMode = "integration-build" | "tool-use";
+
+/** Build phase marker for the grading specification. */
+export type BuildPhase = "slice-1" | "slice-2" | "later";
+
+/** Task lane from the grading specification coverage matrix. */
+export type TaskLane = "A" | "B" | "C" | "D" | "E" | "F" | "G";
+
+/** Grader categories. */
+export type GraderKind = "deterministic" | "static" | "dynamic" | "trace" | "judge";
+
+/** Severity used for findings and grade caps. */
+export type Severity = "critical" | "high" | "medium" | "low";
+
+/** Finding lifecycle. Slice 1 treats LLM-judge findings as advisory. */
+export type FindingStatus = "confirmed" | "advisory" | "dismissed";
+
+/** Evidence source type shown in reports. */
+export type EvidenceType = "deterministic" | "static" | "dynamic" | "trace" | "judge";
+
+/** Whether evidence excerpts were redacted before storage/display. */
+export type RedactionStatus = "clean" | "redacted";
+
+/** Letter-grade bands from the grading specification. */
+export type GradeBand =
+  | "A+"
+  | "A"
+  | "A-"
+  | "B+"
+  | "B"
+  | "B-"
+  | "C+"
+  | "C"
+  | "C-"
+  | "D"
+  | "F";
+
+export type CodeVsNoCode = "code" | "no-code" | "mixed";
+
 /**
  * A single context input the agent will see. URLs and repos are re-fetchable on
  * re-runs so context stays fresh; files and pastes are stored verbatim.
@@ -37,10 +77,18 @@ export type AssertionType = "shell" | "http" | "file" | "llm";
 
 /** A single pass/fail test definition. The `config` shape depends on `type`. */
 export interface Assertion {
+  /** Stable grader id when imported from a richer TaskSpec. */
+  id?: string;
   type: AssertionType;
   /** Human-readable name shown in the report verdicts. */
   name: string;
   config: ShellAssertion | HttpAssertion | FileAssertion | LlmAssertion;
+  /** Optional grading metadata used when this assertion emits a finding. */
+  severityOnFail?: Severity;
+  frictionCode?: string;
+  canHardCap?: boolean;
+  hardCapGrade?: GradeBand;
+  codeVsNoCode?: CodeVsNoCode;
 }
 
 export interface ShellAssertion {
@@ -52,10 +100,18 @@ export interface ShellAssertion {
 
 export interface HttpAssertion {
   url: string;
+  /** HTTP method (default GET). */
+  method?: HttpMethod;
+  /** Optional request headers. */
+  headers?: Record<string, string>;
+  /** Optional request body for non-GET assertions. */
+  body?: string;
   /** Expected status code (default 200). */
   expectStatus?: number;
   /** Optional substring the response body must contain. */
   expectBodyContains?: string;
+  /** Optional substring the response body must not contain. */
+  expectBodyNotContains?: string;
 }
 
 export interface FileAssertion {
@@ -69,16 +125,178 @@ export interface LlmAssertion {
   criterion: string;
 }
 
+export interface TaskOracle {
+  quickstartRef?: string;
+  referenceImplementationRef?: string;
+  expectedEndState: Record<string, unknown>;
+  replaySetupCmd?: string;
+  replayAssertCmd?: string;
+}
+
+export interface GraderSpec {
+  id: string;
+  kind: GraderKind;
+  name: string;
+  required: boolean;
+  severityOnFail: Severity;
+  frictionCode?: string;
+  replayCmdTemplate: string;
+}
+
+export interface TaskSpec {
+  id: string;
+  title: string;
+  mode: GradeMode;
+  lane: TaskLane;
+  prompt: string;
+  contextRefs: string[];
+  agentTypes: AgentType[];
+  modelIds: string[];
+  n: number;
+  weight: number;
+  oracle: TaskOracle;
+  requiredGraders: GraderSpec[];
+  staticGraders: GraderSpec[];
+  dynamicGraders: GraderSpec[];
+  tags: string[];
+}
+
+export interface GraderEvidence {
+  type: EvidenceType;
+  confidence: number;
+  replayCmd: string;
+  redactionStatus: RedactionStatus;
+  customerExcerpt: string;
+  artifactRefs?: string[];
+  observedAt: string;
+}
+
+export interface Finding {
+  id: string;
+  runId: string;
+  taskSpecId: string;
+  code: string;
+  title: string;
+  severity: Severity;
+  status: FindingStatus;
+  canHardCap: boolean;
+  hardCapGrade?: GradeBand;
+  evidence: GraderEvidence[];
+  fixTemplateId?: string;
+  codeVsNoCode: CodeVsNoCode;
+}
+
+export interface ConfidenceInterval {
+  low: number;
+  high: number;
+}
+
+export interface GradeCap {
+  maxGrade: GradeBand;
+  maxScore: number;
+  reason: string;
+  findingIds: string[];
+}
+
+export interface GradeScore {
+  raw: number;
+  capped: number;
+  letter: GradeBand;
+  passRate: number;
+  confidenceInterval: ConfidenceInterval;
+  runs: number;
+  passedRuns: number;
+  cap?: GradeCap;
+}
+
+export interface AgentModelGrade {
+  agentType: AgentType;
+  modelId: string;
+  runs: number;
+  passedRuns: number;
+  passRate: number;
+}
+
+export interface RemediationProjection {
+  score: number;
+  letter: GradeBand;
+  summary: string;
+}
+
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+export interface DynamicProbe {
+  id?: string;
+  name: string;
+  url: string;
+  method?: HttpMethod;
+  headers?: Record<string, string>;
+  body?: string;
+  expectStatus?: number;
+  expectStatusMin?: number;
+  expectStatusMax?: number;
+  expectBodyContains?: string;
+  expectBodyNotContains?: string;
+  codeOnFail?: string;
+  severityOnFail?: Severity;
+  canHardCap?: boolean;
+  hardCapGrade?: GradeBand;
+}
+
+export interface TraceMetrics {
+  durationSec: number;
+  totalSteps: number;
+  tokens: number;
+  retryCount: number;
+  loopOnSameErrorCount: number;
+  humanRescueCount: number;
+  apiErrorCount: number;
+  sdkDiscoveryEvents: number;
+  handRolledIndicators: number;
+}
+
+export interface GradeRunGroup {
+  evalId: string;
+  runIds: string[];
+  expectedRuns: number;
+  completedRuns: number;
+  platformErrorRuns: number;
+  status: "partial" | "complete";
+}
+
+export interface GradeStability {
+  stable: boolean;
+  bandSpread: number;
+  minGrade: GradeBand;
+  maxGrade: GradeBand;
+  note: string;
+}
+
+export interface GradeDefinitionCheck {
+  id: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+}
+
 /** The full eval definition stored as JSONB (Decision 4). */
 export interface EvalConfig {
   task: string;
   language: Language;
   context: ContextSource[];
   assertions: Assertion[];
+  /** Optional dynamic negative/runtime probes. */
+  dynamicProbes?: DynamicProbe[];
+  /** Optional richer task definition. Existing evals can omit this and derive one. */
+  taskSpec?: TaskSpec;
   metadata: {
     agentType: AgentType;
     /** Hard sandbox timeout in seconds. */
     timeoutSec: number;
+    /** Agent model id when known; "unknown" is used in reports otherwise. */
+    modelId?: string;
+    /** Requested run count. Slice 1 execution still stores each run independently. */
+    requestedRuns?: number;
   };
 }
 
@@ -118,6 +336,25 @@ export interface Verdict {
   output?: string;
   /** Short "what to fix" hint shown on failures. */
   hint?: string;
+  /** Replayable evidence for this verdict. */
+  evidence?: GraderEvidence[];
+}
+
+export interface GradeReport {
+  runId: string;
+  taskSpecId: string;
+  mode: GradeMode;
+  buildPhase: BuildPhase;
+  taskPassed: boolean;
+  score: GradeScore;
+  findings: Finding[];
+  agentMatrix: AgentModelGrade[];
+  traceMetrics?: TraceMetrics;
+  runGroup?: GradeRunGroup;
+  stability?: GradeStability;
+  definitionOfDone: GradeDefinitionCheck[];
+  generatedAt: string;
+  remediationProjection?: RemediationProjection;
 }
 
 /** A complete run, server-rendered into the report page (Decisions 6, 7, 9). */
@@ -136,6 +373,7 @@ export interface RunResult {
   tokens: number;
   events: AgentEvent[];
   verdicts: Verdict[];
+  gradeReport?: GradeReport;
 }
 
 /** GitHub-authenticated user (Decision 8). */
