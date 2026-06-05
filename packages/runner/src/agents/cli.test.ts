@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ExecResult, HttpRequest, HttpResult, SandboxHandle } from "@kiln/grader";
 import type { EvalConfig } from "@kiln/shared";
+import { ClaudeCodeAgent } from "./claude-code";
 import { CodexAgent } from "./codex";
 import { getAgent } from "./registry";
 
@@ -88,6 +89,30 @@ describe("CLI adapters", () => {
     expect(result.tokens).toBe(20);
     expect(streamed).toContain("npm test");
     expect(result.events.some((event) => event.kind === "command")).toBe(true);
+  });
+
+  it("passes the configured Bedrock Claude model to Claude Code", async () => {
+    const previousUseCli = process.env.KILN_AGENT_USE_CLI;
+    const previousModel = process.env.ANTHROPIC_MODEL;
+    process.env.KILN_AGENT_USE_CLI = "1";
+    process.env.ANTHROPIC_MODEL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
+    try {
+      const sandbox = new CliSandbox();
+      await new ClaudeCodeAgent().startTask({
+        config,
+        sandbox,
+        prompt: "Build it",
+      });
+
+      expect(sandbox.commands[1]).toContain(
+        "--model 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'",
+      );
+    } finally {
+      if (previousUseCli === undefined) delete process.env.KILN_AGENT_USE_CLI;
+      else process.env.KILN_AGENT_USE_CLI = previousUseCli;
+      if (previousModel === undefined) delete process.env.ANTHROPIC_MODEL;
+      else process.env.ANTHROPIC_MODEL = previousModel;
+    }
   });
 
   it("registers the Cursor adapter", () => {

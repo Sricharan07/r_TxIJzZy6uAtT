@@ -32,6 +32,14 @@ function simulateSession(prompt: string): AgentEvent[] {
   ];
 }
 
+function configuredClaudeModelFlag(): string {
+  const model =
+    process.env.KILN_CLAUDE_MODEL ??
+    process.env.ANTHROPIC_MODEL ??
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+  return model ? ` --model ${shellQuote(model)}` : "";
+}
+
 export class ClaudeCodeAgent implements Agent {
   readonly type = "claude-code" as const;
 
@@ -43,7 +51,7 @@ export class ClaudeCodeAgent implements Agent {
           binary: "claude",
           commandEnv: "KILN_CLAUDE_COMMAND",
           buildCommand: (prompt) =>
-            `claude --bare -p ${shellQuote(prompt)} --output-format stream-json --verbose ` +
+            `claude --bare -p ${shellQuote(prompt)}${configuredClaudeModelFlag()} --output-format stream-json --verbose ` +
             `--permission-mode acceptEdits --allowedTools Bash Read Edit Write MultiEdit Glob Grep LS WebFetch`,
         });
       } catch (err) {
