@@ -115,6 +115,9 @@ npm install \
   --no-fund \
   "npm@${KILN_GUEST_NPM_VERSION:-10.9.7}" \
   "@anthropic-ai/claude-code@${KILN_CLAUDE_CODE_VERSION:-2.1.179}"
+ln -sfn ../node_modules/.bin/npm "$tmp/squashfs-root/usr/local/bin/npm"
+ln -sfn ../node_modules/.bin/npx "$tmp/squashfs-root/usr/local/bin/npx"
+ln -sfn ../node_modules/.bin/claude "$tmp/squashfs-root/usr/local/bin/claude"
 chown -R root:root "$tmp/squashfs-root"
 truncate -s "${KILN_FIRECRACKER_ROOTFS_SIZE:-4G}" "$FC_DIR/rootfs.ext4"
 mkfs.ext4 -F -d "$tmp/squashfs-root" "$FC_DIR/rootfs.ext4" >/dev/null
