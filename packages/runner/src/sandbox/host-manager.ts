@@ -7,7 +7,7 @@
  * Host-level forwarding/NAT policy is provisioned outside this process.
  */
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { access, copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -175,7 +175,7 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
     const rootDir = await mkdtemp(join(this.config.workDir, `kiln-${id}-`));
     const rootfsPath = join(rootDir, basename(this.config.rootfsPath));
     const socketPath = join(rootDir, "firecracker.sock");
-    await copyFile(this.config.rootfsPath, rootfsPath);
+    await runFile("cp", ["--sparse=always", this.config.rootfsPath, rootfsPath]);
 
     let process: ChildProcess | null = null;
     try {

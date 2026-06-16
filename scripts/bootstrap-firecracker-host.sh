@@ -116,7 +116,7 @@ npm install \
   "npm@${KILN_GUEST_NPM_VERSION:-10.9.7}" \
   "@anthropic-ai/claude-code@${KILN_CLAUDE_CODE_VERSION:-2.1.179}"
 chown -R root:root "$tmp/squashfs-root"
-truncate -s 8G "$FC_DIR/rootfs.ext4"
+truncate -s "${KILN_FIRECRACKER_ROOTFS_SIZE:-4G}" "$FC_DIR/rootfs.ext4"
 mkfs.ext4 -F -d "$tmp/squashfs-root" "$FC_DIR/rootfs.ext4" >/dev/null
 install -m 0644 "$tmp/vmlinux.bin" "$FC_DIR/vmlinux.bin"
 
