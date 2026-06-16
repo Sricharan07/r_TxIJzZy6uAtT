@@ -1,0 +1,17 @@
+[Unit]
+Description=Kiln self-hosted dependencies
+Requires=docker.service
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__KILN_APP_DIR__
+EnvironmentFile=/etc/kiln/app.env
+ExecStart=/usr/bin/docker compose --env-file /etc/kiln/app.env -f __KILN_APP_DIR__/infra/self-host/docker-compose.yml up -d
+ExecStop=/usr/bin/docker compose --env-file /etc/kiln/app.env -f __KILN_APP_DIR__/infra/self-host/docker-compose.yml down
+RemainAfterExit=yes
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

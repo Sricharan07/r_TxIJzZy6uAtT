@@ -1,0 +1,17 @@
+[Unit]
+Description=Kiln web app
+Requires=kiln-self-host.service
+After=network-online.target kiln-self-host.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__KILN_APP_DIR__/packages/web
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/kiln/app.env
+ExecStart=/usr/bin/npm run start -- --hostname 127.0.0.1 --port 3000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

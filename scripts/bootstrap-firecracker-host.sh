@@ -112,13 +112,14 @@ mkfs.ext4 -F -d "$tmp/squashfs-root" "$FC_DIR/rootfs.ext4" >/dev/null
 install -m 0644 "$tmp/vmlinux.bin" "$FC_DIR/vmlinux.bin"
 
 escaped_app_dir="${APP_DIR//&/\\&}"
-sed "s#__KILN_APP_DIR__#$escaped_app_dir#g" "$APP_DIR/infra/systemd/kiln-firecracker-host-manager.service" > "$SYSTEMD_DIR/kiln-firecracker-host-manager.service"
-sed "s#__KILN_APP_DIR__#$escaped_app_dir#g" "$APP_DIR/infra/systemd/kiln-runner-worker.service" > "$SYSTEMD_DIR/kiln-runner-worker.service"
-chmod 0644 "$SYSTEMD_DIR/kiln-firecracker-host-manager.service" "$SYSTEMD_DIR/kiln-runner-worker.service"
+for unit in kiln-self-host kiln-web kiln-firecracker-host-manager kiln-runner-worker; do
+  sed "s#__KILN_APP_DIR__#$escaped_app_dir#g" "$APP_DIR/infra/systemd/$unit.service" > "$SYSTEMD_DIR/$unit.service"
+  chmod 0644 "$SYSTEMD_DIR/$unit.service"
+done
 cp "$ENV_FILE" /etc/kiln/app.env
 
 systemctl daemon-reload
-systemctl enable kiln-firecracker-host-manager.service kiln-runner-worker.service
+systemctl enable kiln-self-host.service kiln-web.service kiln-firecracker-host-manager.service kiln-runner-worker.service
 
 echo "Firecracker host assets are installed under $FC_DIR."
-echo "Start services with: systemctl start kiln-firecracker-host-manager kiln-runner-worker"
+echo "Start services with: systemctl start kiln-self-host kiln-web kiln-firecracker-host-manager kiln-runner-worker"
