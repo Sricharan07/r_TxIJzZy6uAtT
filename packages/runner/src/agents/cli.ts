@@ -19,6 +19,25 @@ export interface CliAgentSpec {
 
 export class AgentCliUnavailableError extends Error {}
 
+const FORWARDED_AGENT_ENV = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "AWS_DEFAULT_REGION",
+  "AWS_REGION",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+];
+
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -96,6 +115,14 @@ function configuredCommand(spec: CliAgentSpec, prompt: string): string {
     : `${template} ${shellQuote(prompt)}`;
 }
 
+function forwardedAgentEnvPrefix(): string {
+  const env = FORWARDED_AGENT_ENV.flatMap((key) => {
+    const value = process.env[key];
+    return value ? [`${key}=${shellQuote(value)}`] : [];
+  });
+  return env.length ? `env ${env.join(" ")} ` : "";
+}
+
 function canStream(sandbox: AgentTask["sandbox"]): sandbox is AgentTask["sandbox"] & StreamingSandbox {
   return "execStreaming" in sandbox && typeof (sandbox as StreamingSandbox).execStreaming === "function";
 }
@@ -113,7 +140,7 @@ export async function runCliAgent(task: AgentTask, spec: CliAgentSpec): Promise<
     text: `${spec.displayName} session started`,
   });
   const startedAt = Date.now();
-  const command = configuredCommand(spec, task.prompt);
+  const command = `${forwardedAgentEnvPrefix()}${configuredCommand(spec, task.prompt)}`;
   let normalized: ReturnType<typeof normalizedEvents> = { events: [], tokens: 0 };
   const sandbox = task.sandbox;
   const streaming = canStream(sandbox);

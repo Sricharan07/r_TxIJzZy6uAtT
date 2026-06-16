@@ -106,6 +106,15 @@ rm -rf "$tmp/squashfs-root"
 unsquashfs -d "$tmp/squashfs-root" "$tmp/ubuntu.squashfs.upstream" >/dev/null
 install -d -m 0700 "$tmp/squashfs-root/root/.ssh"
 install -m 0600 "$FC_DIR/id_rsa.pub" "$tmp/squashfs-root/root/.ssh/authorized_keys"
+install -d -m 0755 "$tmp/squashfs-root/usr/local/bin"
+install -m 0755 "$(command -v node)" "$tmp/squashfs-root/usr/local/bin/node"
+npm install \
+  --prefix "$tmp/squashfs-root/usr/local" \
+  --omit=dev \
+  --no-audit \
+  --no-fund \
+  "npm@${KILN_GUEST_NPM_VERSION:-10.9.7}" \
+  "@anthropic-ai/claude-code@${KILN_CLAUDE_CODE_VERSION:-2.1.179}"
 chown -R root:root "$tmp/squashfs-root"
 truncate -s 8G "$FC_DIR/rootfs.ext4"
 mkfs.ext4 -F -d "$tmp/squashfs-root" "$FC_DIR/rootfs.ext4" >/dev/null
