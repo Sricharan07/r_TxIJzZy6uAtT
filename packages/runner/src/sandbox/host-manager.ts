@@ -327,11 +327,28 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
     if (!defaultIface) throw new Error(`Could not determine default network interface: ${route.stderr || route.stdout}`);
     const forward = await runCommand("sysctl", ["-w", "net.ipv4.ip_forward=1"]);
     if (forward.code !== 0) throw new Error(`Could not enable IPv4 forwarding: ${forward.stderr}`);
-    const check = await runCommand("iptables", ["-t", "nat", "-C", "POSTROUTING", "-o", defaultIface, "-j", "MASQUERADE"]);
-    if (check.code !== 0) {
-      const add = await runCommand("iptables", ["-t", "nat", "-A", "POSTROUTING", "-o", defaultIface, "-j", "MASQUERADE"]);
-      if (add.code !== 0) throw new Error(`Could not configure NAT masquerade on ${defaultIface}: ${add.stderr}`);
-    }
+    await this.ensureIptablesRule(
+      ["-t", "nat", "-C", "POSTROUTING", "-s", "172.30.0.0/16", "-o", defaultIface, "-j", "MASQUERADE"],
+      ["-t", "nat", "-A", "POSTROUTING", "-s", "172.30.0.0/16", "-o", defaultIface, "-j", "MASQUERADE"],
+      `NAT masquerade on ${defaultIface}`,
+    );
+    await this.ensureIptablesRule(
+      ["-C", "FORWARD", "-i", "kiln+", "-o", defaultIface, "-j", "ACCEPT"],
+      ["-I", "FORWARD", "1", "-i", "kiln+", "-o", defaultIface, "-j", "ACCEPT"],
+      `forwarding from Firecracker taps to ${defaultIface}`,
+    );
+    await this.ensureIptablesRule(
+      ["-C", "FORWARD", "-i", defaultIface, "-o", "kiln+", "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+      ["-I", "FORWARD", "1", "-i", defaultIface, "-o", "kiln+", "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+      `return forwarding from ${defaultIface} to Firecracker taps`,
+    );
+  }
+
+  private async ensureIptablesRule(checkArgs: string[], addArgs: string[], description: string): Promise<void> {
+    const check = await runCommand("iptables", checkArgs);
+    if (check.code === 0) return;
+    const add = await runCommand("iptables", addArgs);
+    if (add.code !== 0) throw new Error(`Could not configure ${description}: ${add.stderr}`);
   }
 
   private ssh(id: string, command: string, knownVm?: BootedVm, onLine?: ExecLineHandler): Promise<CommandResult> {
