@@ -130,7 +130,7 @@ export class PostgresKilnStore implements KilnStore {
       `INSERT INTO evals (user_id, config, share_token)
        VALUES ($1, $2, $3)
        RETURNING *`,
-      [userId, config, `cfg_${randomUUID()}`],
+      [userId, JSON.stringify(config), `cfg_${randomUUID()}`],
     );
     return toEval(result.rows[0]!);
   }
@@ -216,7 +216,7 @@ export class PostgresKilnStore implements KilnStore {
           run.totalSteps,
           run.tokens,
           traceKey,
-          run.gradeReport ?? null,
+          run.gradeReport ? JSON.stringify(run.gradeReport) : null,
         ],
       );
       await client.query("DELETE FROM verdicts WHERE run_id = $1", [run.id]);
@@ -232,7 +232,7 @@ export class PostgresKilnStore implements KilnStore {
             verdict.passed,
             verdict.output ?? null,
             verdict.hint ?? null,
-            verdict.evidence ?? null,
+            verdict.evidence ? JSON.stringify(verdict.evidence) : null,
           ],
         );
       }
