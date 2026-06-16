@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type QueryResultRow } from "pg";
-import { SCHEMA_SQL, type EvalRow, type RunRow, type UserRow, type VerdictRow } from "./db/schema.js";
+import {
+  SCHEMA_SQL,
+  type AuthSessionRow,
+  type EvalRow,
+  type RunRow,
+  type UserRow,
+  type VerdictRow,
+} from "./db/schema.js";
 import { getBlobStore, type BlobStore } from "./s3.js";
 import type { Eval, EvalConfig, GradeReport, GraderEvidence, RunResult, User, Verdict } from "./types.js";
 import type { EvalSummary, KilnStore } from "./store.js";
@@ -93,6 +100,29 @@ export class PostgresKilnStore implements KilnStore {
   async getUser(id: string): Promise<User | null> {
     const result = await this.query<UserRow>("SELECT * FROM users WHERE id::text = $1", [id]);
     return result.rows[0] ? toUser(result.rows[0]) : null;
+  }
+
+  async createSession(tokenHash: string, userId: string, expiresAt: string): Promise<void> {
+    await this.query(
+      `INSERT INTO auth_sessions (token_hash, user_id, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (token_hash) DO UPDATE
+       SET user_id = EXCLUDED.user_id, expires_at = EXCLUDED.expires_at`,
+      [tokenHash, userId, expiresAt],
+    );
+  }
+
+  async getSessionUserId(tokenHash: string): Promise<string | null> {
+    await this.query("DELETE FROM auth_sessions WHERE expires_at <= now()");
+    const result = await this.query<AuthSessionRow>(
+      "SELECT * FROM auth_sessions WHERE token_hash = $1 AND expires_at > now()",
+      [tokenHash],
+    );
+    return result.rows[0]?.user_id ?? null;
+  }
+
+  async deleteSession(tokenHash: string): Promise<void> {
+    await this.query("DELETE FROM auth_sessions WHERE token_hash = $1", [tokenHash]);
   }
 
   async createEval(userId: string, config: EvalConfig): Promise<Eval> {

@@ -12,7 +12,7 @@ function canWriteFiles(sandbox: AgentTask["sandbox"]): sandbox is AgentTask["san
 }
 
 function allowLocalFallback(): boolean {
-  return process.env.KILN_AGENT_FALLBACK === "1" || (process.env.KILN_SANDBOX_MODE ?? "local") === "local";
+  return process.env.KILN_AGENT_FALLBACK === "1";
 }
 
 function simulateSession(prompt: string): AgentEvent[] {

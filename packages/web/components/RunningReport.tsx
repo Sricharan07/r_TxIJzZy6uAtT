@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { AgentEvent, RunResult } from "@kiln/shared";
-import { formatDuration } from "@kiln/shared";
+import type { AgentEvent, RunResult } from "@kiln/shared/types";
+import { formatDuration } from "@kiln/shared/types";
 
 export function RunningReport({ run }: { run: RunResult }) {
   const router = useRouter();

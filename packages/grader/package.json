@@ -8,7 +8,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "test": "vitest run src"
+    "test": "vitest run src --pool=threads"
   },
   "dependencies": {
     "@kiln/shared": "*"

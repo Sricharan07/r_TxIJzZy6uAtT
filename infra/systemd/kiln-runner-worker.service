@@ -1,0 +1,17 @@
+[Unit]
+Description=Kiln Runner Worker
+After=network-online.target kiln-firecracker-host-manager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=__KILN_APP_DIR__/packages/runner
+EnvironmentFile=/etc/kiln/app.env
+ExecStart=/usr/bin/env node dist/service.js
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

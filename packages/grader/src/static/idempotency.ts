@@ -17,22 +17,31 @@ function requiresIdempotency(text: string): boolean {
   );
 }
 
-function createsMoneyMovement(artifact: StaticArtifact): boolean {
-  return /createPaymentIntent|paymentIntents?\.create|charges?\.create|checkout\.sessions?\.create|createCharge|chargeCustomer/i.test(
-    artifact.contents,
-  );
+function moneyMovementLineIndex(artifact: StaticArtifact): number {
+  return artifact.contents
+    .split("\n")
+    .findIndex((line) =>
+      /createPaymentIntent|paymentIntents?\.create|charges?\.create|checkout\.sessions?\.create|createCharge|chargeCustomer/i.test(
+        line,
+      ),
+    );
 }
 
-function hasIdempotency(contents: string): boolean {
-  return /\bidempotenc/i.test(contents);
+function hasNearbyIdempotency(contents: string, lineIndex: number): boolean {
+  const lines = contents.split("\n");
+  const start = Math.max(0, lineIndex - 5);
+  const end = Math.min(lines.length, lineIndex + 6);
+  return /\bidempotenc/i.test(lines.slice(start, end).join("\n"));
 }
 
 export async function runIdempotencyGrader(
   context: StaticGraderContext,
 ): Promise<Finding[]> {
   if (!requiresIdempotency(contextText(context.config))) return [];
-  const artifact = sourceArtifacts(context.artifacts).find(createsMoneyMovement);
-  if (!artifact || hasIdempotency(artifact.contents)) return [];
+  const candidate = sourceArtifacts(context.artifacts)
+    .map((artifact) => ({ artifact, lineIndex: moneyMovementLineIndex(artifact) }))
+    .find((item) => item.lineIndex >= 0);
+  if (!candidate || hasNearbyIdempotency(candidate.artifact.contents, candidate.lineIndex)) return [];
 
   return [
     makeFinding({
@@ -44,8 +53,8 @@ export async function runIdempotencyGrader(
         makeEvidence({
           replayCmd:
             "grep -RInE 'idempotenc|paymentIntent|paymentIntents|charge|checkout.sessions' . --exclude-dir=node_modules --exclude-dir=.git",
-          excerpt: `${artifact.path}: money-moving API call found without idempotency handling.`,
-          artifactRefs: [artifact.path],
+          excerpt: `${candidate.artifact.path}: money-moving API call found without nearby idempotency handling.`,
+          artifactRefs: [candidate.artifact.path],
           observedAt: context.observedAt,
         }),
       ],

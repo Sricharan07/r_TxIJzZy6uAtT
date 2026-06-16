@@ -328,7 +328,7 @@ export class FirecrackerSandbox implements RunnerSandbox {
 }
 
 export function createSandbox(id: string): RunnerSandbox {
-  const mode = process.env.KILN_SANDBOX_MODE ?? "local";
+  const mode = process.env.KILN_SANDBOX_MODE ?? (process.env.NODE_ENV === "production" ? "firecracker" : "local");
   if (mode === "local") return new LocalSandbox(id);
   if (mode === "firecracker") return new FirecrackerSandbox(id);
   throw new Error(`Unknown KILN_SANDBOX_MODE "${mode}". Expected "local" or "firecracker".`);

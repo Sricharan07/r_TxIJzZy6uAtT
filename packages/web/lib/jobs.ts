@@ -1,9 +1,18 @@
-import { executeRun } from "@kiln/runner";
-import { aggregateCompletedRunReports, type Eval, type EvalConfig, type RunResult } from "@kiln/shared";
+import { aggregateCompletedRunReports, type AgentEvent, type Eval, type EvalConfig, type RunResult } from "@kiln/shared";
 import { getStore, type KilnStore } from "@kiln/shared/store";
-import { Queue } from "bullmq";
 
 const globalJobs = globalThis as typeof globalThis & { __kilnJobs?: Set<string> };
+const RETAIN_COMPLETED_JOBS = { age: 60 * 60 * 24, count: 1_000 };
+const RETAIN_FAILED_JOBS = { age: 60 * 60 * 24 * 7, count: 5_000 };
+type ExecuteRun = (
+  config: EvalConfig,
+  options: {
+    runId: string;
+    evalId: string;
+    evalTitle: string;
+    onEvent(event: AgentEvent): Promise<void>;
+  },
+) => Promise<RunResult>;
 
 function jobs(): Set<string> {
   globalJobs.__kilnJobs ??= new Set<string>();
@@ -29,6 +38,25 @@ async function saveStatus(run: RunResult, status: RunResult["status"]): Promise<
     ...run,
     status,
     startedAt: status === "running" ? new Date().toISOString() : run.startedAt,
+  });
+}
+
+async function savePlatformError(run: RunResult, err: unknown): Promise<void> {
+  await getStore().saveRun({
+    ...run,
+    status: "errored",
+    errorType: "platform",
+    finishedAt: new Date().toISOString(),
+    events: [
+      ...run.events,
+      {
+        t: 0,
+        kind: "fail",
+        text: "Run failed before completion",
+        annotation: err instanceof Error ? err.message : String(err),
+      },
+    ],
+    verdicts: [],
   });
 }
 
@@ -58,13 +86,40 @@ async function refreshEvalGradeReports(evalRecord: Eval): Promise<void> {
   }
 }
 
-export function enqueueRun(evalRecord: Eval, run: RunResult): void {
+export async function enqueueRun(evalRecord: Eval, run: RunResult): Promise<void> {
   const connection = redisConnection();
   const mode = process.env.KILN_QUEUE_MODE ?? (process.env.NODE_ENV === "production" ? "redis" : "local");
   if (mode === "redis") {
     if (!connection) throw new Error("REDIS_URL is required when KILN_QUEUE_MODE=redis.");
+    const bullmqSpecifier = "bullmq";
+    const { Queue } = (await import(bullmqSpecifier)) as {
+      Queue: new (
+        name: string,
+        options: Record<string, unknown>,
+      ) => {
+        add(name: string, data: unknown, options: Record<string, unknown>): Promise<unknown>;
+        close(): Promise<void>;
+      };
+    };
     const queue = new Queue("kiln-runs", { connection });
-    void queue.add("run", { evalId: evalRecord.id, runId: run.id }).finally(() => queue.close());
+    try {
+      await queue.add(
+        "run",
+        { evalId: evalRecord.id, runId: run.id },
+        {
+          jobId: run.id,
+          attempts: 3,
+          backoff: { type: "exponential", delay: 5_000 },
+          removeOnComplete: RETAIN_COMPLETED_JOBS,
+          removeOnFail: RETAIN_FAILED_JOBS,
+        },
+      );
+    } catch (err) {
+      await savePlatformError(run, err);
+      throw err;
+    } finally {
+      await queue.close();
+    }
     return;
   }
   if (mode !== "local") {
@@ -77,6 +132,8 @@ export function enqueueRun(evalRecord: Eval, run: RunResult): void {
 
   void (async () => {
     try {
+      const runnerSpecifier = "@kiln/runner";
+      const { executeRun } = (await import(runnerSpecifier)) as { executeRun: ExecuteRun };
       await saveStatus(run, "running");
       const result = await executeRun(evalRecord.config, {
         runId: run.id,
@@ -91,22 +148,7 @@ export function enqueueRun(evalRecord: Eval, run: RunResult): void {
       await getStore().saveRun(result);
       await refreshEvalGradeReports(evalRecord);
     } catch (err) {
-      await getStore().saveRun({
-        ...run,
-        status: "errored",
-        errorType: "platform",
-        finishedAt: new Date().toISOString(),
-        events: [
-          ...run.events,
-          {
-            t: 0,
-            kind: "fail",
-            text: "Run failed before completion",
-            annotation: err instanceof Error ? err.message : String(err),
-          },
-        ],
-        verdicts: [],
-      });
+      await savePlatformError(run, err);
       await refreshEvalGradeReports(evalRecord);
     } finally {
       active.delete(run.id);

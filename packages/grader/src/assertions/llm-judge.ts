@@ -7,8 +7,9 @@
  * bundle of run artifacts and parses a pass/fail + reasoning.
  *
  * `AnthropicJudge` calls the Messages API when `ANTHROPIC_API_KEY` and
- * `KILN_LLM_JUDGE_MODEL` are configured. `HeuristicJudge` remains an explicit
- * local-development fallback when no provider credentials are present.
+ * `KILN_LLM_JUDGE_MODEL` are configured. When no provider is configured, the
+ * assertion is marked unsatisfied with explicit evidence instead of using a
+ * heuristic substitute.
  *
  * `Verdict.output` is set to the judge's reasoning.
  */
@@ -88,7 +89,7 @@ export class AnthropicJudge implements LlmJudge {
 
 export function createDefaultLlmJudge(): LlmJudge {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return new HeuristicJudge();
+  if (!apiKey) return new UnconfiguredJudge();
   const model = process.env.KILN_LLM_JUDGE_MODEL;
   if (!model) {
     throw new Error("KILN_LLM_JUDGE_MODEL is required when ANTHROPIC_API_KEY is configured.");
@@ -96,37 +97,19 @@ export function createDefaultLlmJudge(): LlmJudge {
   return new AnthropicJudge(apiKey, model);
 }
 
-/**
- * Deterministic fallback judge (STUB — no real LLM reasoning).
- *
- * Heuristic: pass when the artifact bundle is non-trivial and mentions at least
- * one significant word from the criterion. This is intentionally simple and
- * fully deterministic so runs are reproducible without network/API keys.
- */
-export class HeuristicJudge implements LlmJudge {
+/** Honest no-provider implementation used when LLM judging is not configured. */
+export class UnconfiguredJudge implements LlmJudge {
   async judge(
-    criterion: string,
+    _criterion: string,
     artifacts: string,
   ): Promise<{ passed: boolean; reasoning: string }> {
-    const text = artifacts.toLowerCase();
-    const keywords = criterion
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter((w) => w.length > 3);
-
-    const hits = keywords.filter((w) => text.includes(w));
-    const hasSubstance = artifacts.trim().length >= 40;
-    const passed = hasSubstance && (keywords.length === 0 || hits.length > 0);
-
-    const reasoning =
-      `[stub heuristic judge — not a real LLM judgement] ` +
-      `Matched ${hits.length}/${keywords.length} criterion keyword(s) ` +
-      `in ${artifacts.trim().length} chars of artifacts. ` +
-      (passed
-        ? `Treating criterion as plausibly satisfied.`
-        : `Insufficient evidence that the criterion is satisfied.`);
-
-    return { passed, reasoning };
+    return {
+      passed: false,
+      reasoning:
+        `LLM judge is not configured, so this advisory assertion was not evaluated. ` +
+        `Configure ANTHROPIC_API_KEY and KILN_LLM_JUDGE_MODEL to enable it. ` +
+        `Collected ${artifacts.trim().length} chars of artifacts.`,
+    };
   }
 }
 
@@ -135,11 +118,12 @@ export class HeuristicJudge implements LlmJudge {
  * minimal for the MVP: the task summary plus any agent-produced report file if
  * present. A real implementation would assemble the diff and key outputs.
  */
-async function gatherArtifacts(criterion: string, sandbox: SandboxHandle): Promise<string> {
-  const parts: string[] = [`CRITERION: ${criterion}`];
+async function gatherArtifacts(_criterion: string, sandbox: SandboxHandle): Promise<string> {
+  const parts: string[] = [];
   // Best-effort: include a conventional output file if the agent wrote one.
   const readme = await sandbox.readFile("README.md");
   if (readme) parts.push(`--- README.md ---\n${readme.slice(0, 4_000)}`);
+  if (parts.length === 0) parts.push("No conventional judge artifacts were available.");
   return parts.join("\n\n");
 }
 

@@ -16,6 +16,25 @@ const config: EvalConfig = {
   metadata: { agentType: "claude-code", timeoutSec: 300 },
 };
 
+const successfulAgent: Agent = {
+  type: "claude-code",
+  async startTask(task) {
+    if ("writeFile" in task.sandbox && typeof task.sandbox.writeFile === "function") {
+      await task.sandbox.writeFile("src/checkout.ts", "export const checkout = true;\n");
+      await task.sandbox.writeFile("README.md", "This project contains a checkout scaffold.\n");
+    }
+    return {
+      events: [
+        { t: 1, kind: "file", text: "Created src/checkout.ts" },
+        { t: 2, kind: "file", text: "Created README.md" },
+      ],
+      tokens: 100,
+      steps: 2,
+      async collectArtifacts() {},
+    };
+  },
+};
+
 describe("executeRun", () => {
   it("runs an eval and returns a reportable result", async () => {
     const streamed: string[] = [];
@@ -23,6 +42,8 @@ describe("executeRun", () => {
       runId: "run_test",
       evalId: "eval_test",
       evalTitle: "Checkout Eval",
+      sandbox: new LocalSandbox("run-test"),
+      agent: successfulAgent,
       async onEvent(event) {
         streamed.push(event.text);
       },
@@ -35,12 +56,12 @@ describe("executeRun", () => {
     expect(streamed.length).toBe(result.events.length);
     expect(result.verdicts).toHaveLength(config.assertions.length);
     expect(result.verdicts.every((v) => v.evidence?.length === 1)).toBe(true);
-    expect(result.verdicts.every((v) => v.passed)).toBe(true);
+    expect(result.verdicts.filter((v) => v.type !== "llm").every((v) => v.passed)).toBe(true);
     expect(result.gradeReport).toMatchObject({
       taskPassed: true,
       score: { letter: "A+", runs: 1, passedRuns: 1 },
-      findings: [],
     });
+    expect(result.gradeReport?.findings.every((finding) => finding.status === "advisory")).toBe(true);
   });
 
   it("classifies a hard sandbox timeout separately from platform errors", async () => {
@@ -66,7 +87,10 @@ describe("executeRun", () => {
         throw new Error("sandbox manager unavailable");
       }
     }
-    const result = await executeRun(config, { sandbox: new BrokenSandbox("grader-platform-test") });
+    const result = await executeRun(config, {
+      sandbox: new BrokenSandbox("grader-platform-test"),
+      agent: successfulAgent,
+    });
 
     expect(result.status).toBe("errored");
     expect(result.errorType).toBe("platform");

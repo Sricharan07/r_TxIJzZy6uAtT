@@ -18,6 +18,7 @@ import { getStore } from "@kiln/shared/store";
  */
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 // Palette (matches the report page surfaces).
 const BG = "#09090b";

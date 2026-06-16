@@ -14,15 +14,20 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspace=packages/web",
     "test": "npm run test --workspaces --if-present",
+    "db:migrate": "node scripts/migrate.mjs",
+    "verify:prod-env": "node scripts/verify-production-env.mjs",
+    "smoke:production": "node scripts/smoke-production.mjs",
+    "smoke:firecracker": "node scripts/smoke-firecracker.mjs",
+    "self-host:env": "node scripts/bootstrap-self-hosted-env.mjs",
+    "self-host:up": "docker compose --env-file .env -f infra/self-host/docker-compose.yml up -d",
+    "self-host:down": "docker compose --env-file .env -f infra/self-host/docker-compose.yml down",
+    "firecracker:bootstrap-host": "bash scripts/bootstrap-firecracker-host.sh",
     "dev": "npm run dev --workspace=packages/web"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
   },
   "dependencies": {
-    "postcss": "8.5.15"
-  },
-  "overrides": {
-    "postcss": "8.5.15"
+    "pg": "^8.16.3"
   }
 }

@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getStore } from "@kiln/shared/store";
 import type { User } from "@kiln/shared";
+import { createUserSession } from "../../../../lib/auth";
 
 export const runtime = "nodejs";
 
@@ -58,12 +59,13 @@ export async function GET(req: Request): Promise<void> {
   };
   const storedUser = await getStore().upsertUser(user);
 
-  cookieStore.set("kiln_user", storedUser.id, {
+  await createUserSession(storedUser.id);
+  cookieStore.set("kiln_oauth_state", "", {
     httpOnly: true,
     sameSite: "lax",
     secure: appUrl.startsWith("https://"),
     path: "/",
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: 0,
   });
   redirect("/");
 }

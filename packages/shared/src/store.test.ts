@@ -24,15 +24,19 @@ describe("JsonKilnStore", () => {
       const user = await store.getOrCreateDevUser();
       const evalRecord = await store.createEval(user.id, config);
       const run = await store.createRun(evalRecord);
+      await store.createSession("session-hash", user.id, "2099-01-01T00:00:00.000Z");
       await store.saveRun({ ...run, status: "completed" });
 
       const reloaded = new JsonKilnStore(join(dir, "data.json"));
+      expect(await reloaded.getSessionUserId("session-hash")).toBe(user.id);
       expect(await reloaded.getEval(evalRecord.id)).toMatchObject({ id: evalRecord.id });
       expect(await reloaded.getEval(evalRecord.shareToken)).toMatchObject({ id: evalRecord.id });
       expect(await reloaded.getRun(run.id)).toMatchObject({ status: "completed" });
       expect(await reloaded.listEvals(user.id)).toEqual(
         expect.arrayContaining([expect.objectContaining({ id: evalRecord.id, runCount: 1 })]),
       );
+      await reloaded.deleteSession("session-hash");
+      expect(await reloaded.getSessionUserId("session-hash")).toBeNull();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -20,7 +20,14 @@ export async function POST(
     return Response.json({ error: "Only the eval owner can re-run this config directly" }, { status: 403 });
   }
   const runs = await createRunsForEval(store, evalRecord);
-  for (const run of runs) enqueueRun(evalRecord, run);
+  try {
+    await Promise.all(runs.map((run) => enqueueRun(evalRecord, run)));
+  } catch (err) {
+    return Response.json(
+      { error: err instanceof Error ? err.message : "Could not enqueue run" },
+      { status: 503 },
+    );
+  }
   const firstRun = runs[0]!;
   return Response.json({
     runId: firstRun.id,

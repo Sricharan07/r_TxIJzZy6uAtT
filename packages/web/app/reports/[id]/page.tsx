@@ -13,6 +13,8 @@ import { getStore } from "@kiln/shared/store";
 import { ShareBar } from "../../../components/ShareBar";
 import { RunningReport } from "../../../components/RunningReport";
 
+export const dynamic = "force-dynamic";
+
 const AGENT_LABEL: Record<AgentType, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
@@ -97,6 +99,8 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
   const passedLabel = report ? `GRADE ${report.score.letter}` : ok ? "PASSED" : "FAILED";
   const passedClass = report ? (report.taskPassed ? "badge-pass" : "badge-fail") : ok ? "badge-pass" : "badge-fail";
   const reportUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/reports/${run.id}`;
+  const evalRecord = await getStore().getEval(run.evalId);
+  const evalConfigHref = evalRecord ? `/evals/${evalRecord.shareToken}` : `/evals/${run.evalId}`;
 
   return (
     <div>
@@ -111,7 +115,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
           </span>
         </div>
         <div className="report-actions">
-          <Link className="btn btn-ghost" href={`/evals/${run.evalId}`}>
+          <Link className="btn btn-ghost" href={evalConfigHref}>
             Eval Config
           </Link>
           <Link className="btn btn-primary" href={`/evals/new?from=${run.evalId}`}>

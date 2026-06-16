@@ -21,9 +21,14 @@ function looksLikeWebhookHandler(artifact: StaticArtifact): boolean {
 }
 
 function verifiesSignature(contents: string): boolean {
-  return /constructEvent|verifySignature|webhooks?\.verify|signature|signing[_\s-]?secret|createHmac|timingSafeEqual/i.test(
+  if (/constructEvent|verifySignature|webhooks?\.verify|verifyWebhook|validateSignature/i.test(contents)) {
+    return true;
+  }
+  const referencesSignature = /\bsignature\b|signing[_\s-]?secret|webhook[_\s-]?secret/i.test(contents);
+  const performsCryptoCheck = /createHmac|timingSafeEqual|crypto\.subtle|subtle\.verify|\bverify\s*\(/i.test(
     contents,
   );
+  return referencesSignature && performsCryptoCheck;
 }
 
 export async function runWebhookSignatureGrader(

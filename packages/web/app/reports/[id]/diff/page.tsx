@@ -1,6 +1,8 @@
 import type { RunResult, Verdict } from "@kiln/shared";
 import { getStore } from "@kiln/shared/store";
 
+export const dynamic = "force-dynamic";
+
 function colDate(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleString("en-US", {

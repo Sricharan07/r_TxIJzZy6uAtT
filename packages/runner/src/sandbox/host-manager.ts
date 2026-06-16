@@ -13,10 +13,12 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExecResult, HttpRequest, HttpResult } from "@kiln/grader";
+import { loadDotEnv } from "../env.js";
 
 interface BootedVm {
   id: string;
   tapName: string;
+  hostIp: string;
   guestIp: string;
   socketPath: string;
   rootDir: string;
@@ -164,6 +166,7 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
 
   async boot(id: string): Promise<string> {
     if (this.vms.has(id)) throw new Error(`Sandbox "${id}" already exists.`);
+    await this.ensureHostNetworking();
     const slot = this.slot++;
     const tapName = `kiln${slot.toString(16)}`.slice(0, 15);
     const subnet = 30 + (slot % 190);
@@ -210,9 +213,10 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
       });
       await firecrackerRequest(socketPath, "PUT", "/actions", { action_type: "InstanceStart" });
 
-      const vm = { id, tapName, guestIp, socketPath, rootDir, process };
+      const vm = { id, tapName, hostIp, guestIp, socketPath, rootDir, process };
       this.vms.set(id, vm);
       await this.waitForGuest(vm);
+      await this.configureGuestNetwork(vm);
       return id;
     } catch (err) {
       this.vms.delete(id);
@@ -306,6 +310,28 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
       await sleep(250);
     }
     throw new Error(`Guest ${vm.id} did not become reachable at ${vm.guestIp}.`);
+  }
+
+  private async configureGuestNetwork(vm: BootedVm): Promise<void> {
+    await this.ssh(
+      vm.id,
+      `ip route replace default via ${shellQuote(vm.hostIp)} dev eth0 || true; ` +
+        `printf 'nameserver 1.1.1.1\\nnameserver 8.8.8.8\\n' > /etc/resolv.conf`,
+      vm,
+    );
+  }
+
+  private async ensureHostNetworking(): Promise<void> {
+    const route = await runCommand("ip", ["route", "show", "default"]);
+    const defaultIface = /\bdev\s+(\S+)/.exec(route.stdout)?.[1];
+    if (!defaultIface) throw new Error(`Could not determine default network interface: ${route.stderr || route.stdout}`);
+    const forward = await runCommand("sysctl", ["-w", "net.ipv4.ip_forward=1"]);
+    if (forward.code !== 0) throw new Error(`Could not enable IPv4 forwarding: ${forward.stderr}`);
+    const check = await runCommand("iptables", ["-t", "nat", "-C", "POSTROUTING", "-o", defaultIface, "-j", "MASQUERADE"]);
+    if (check.code !== 0) {
+      const add = await runCommand("iptables", ["-t", "nat", "-A", "POSTROUTING", "-o", defaultIface, "-j", "MASQUERADE"]);
+      if (add.code !== 0) throw new Error(`Could not configure NAT masquerade on ${defaultIface}: ${add.stderr}`);
+    }
   }
 
   private ssh(id: string, command: string, knownVm?: BootedVm, onLine?: ExecLineHandler): Promise<CommandResult> {
@@ -462,5 +488,6 @@ export async function startHostManager(config = hostConfigFromEnv()): Promise<Se
 }
 
 if (fileURLToPath(import.meta.url) === process.argv[1]) {
+  loadDotEnv();
   void startHostManager();
 }

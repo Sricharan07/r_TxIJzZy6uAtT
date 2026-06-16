@@ -1,11 +1,24 @@
 import Link from "next/link";
 import { getStore } from "@kiln/shared/store";
 import { ShareBar } from "../../../components/ShareBar";
+import { currentUserId } from "../../../lib/auth";
+
+export const dynamic = "force-dynamic";
 
 export default async function EvalConfigPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const evalRecord = await getStore().getEval(id);
   if (!evalRecord) {
+    return (
+      <div className="form-wrapper">
+        <h2>Eval Config</h2>
+        <p style={{ color: "var(--text-muted)" }}>Eval config not found.</p>
+      </div>
+    );
+  }
+  const userId = await currentUserId();
+  const isShareToken = evalRecord.shareToken === id;
+  if (!isShareToken && evalRecord.userId !== userId) {
     return (
       <div className="form-wrapper">
         <h2>Eval Config</h2>

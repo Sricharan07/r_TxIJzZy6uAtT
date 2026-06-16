@@ -17,15 +17,20 @@ const NODE_BUILTINS = new Set([
   "fs",
   "http",
   "https",
+  "module",
   "net",
   "os",
   "path",
+  "perf_hooks",
   "process",
   "querystring",
+  "readline",
   "stream",
   "timers",
+  "tty",
   "url",
   "util",
+  "worker_threads",
   "zlib",
 ]);
 
@@ -47,7 +52,8 @@ function normalizePackage(specifier: string): string | null {
     return null;
   }
   const cleaned = specifier.startsWith("node:") ? specifier.slice(5) : specifier;
-  if (NODE_BUILTINS.has(cleaned)) return null;
+  const firstSegment = cleaned.split("/")[0] ?? cleaned;
+  if (NODE_BUILTINS.has(cleaned) || NODE_BUILTINS.has(firstSegment)) return null;
   const parts = cleaned.split("/");
   return cleaned.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0] ?? null;
 }

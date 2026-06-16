@@ -8,7 +8,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "test": "vitest run src",
+    "test": "vitest run src --pool=threads",
     "start:worker": "node dist/service.js",
     "start:host-manager": "node dist/sandbox/host-manager.js"
   },

@@ -21,7 +21,6 @@ import {
   type Verdict,
 } from "@kiln/shared";
 import { gradeWithReport } from "@kiln/grader";
-import { Worker } from "bullmq";
 import { getStore } from "@kiln/shared/store";
 import { getAgent } from "./agents/registry.js";
 import { createSandbox } from "./sandbox/firecracker.js";
@@ -297,6 +296,14 @@ export async function startWorker(): Promise<void> {
     return;
   }
 
+  const bullmqSpecifier = "bullmq";
+  const { Worker } = (await import(bullmqSpecifier)) as {
+    Worker: new <T>(
+      name: string,
+      processor: (job: { id?: string; data: T }) => Promise<RunResult>,
+      options: Record<string, unknown>,
+    ) => { waitUntilReady(): Promise<void> };
+  };
   const worker = new Worker<RunJob>(
     "kiln-runs",
     async (job) => {
@@ -321,7 +328,12 @@ export async function startWorker(): Promise<void> {
       await refreshEvalGradeReports(evalRecord);
       return result;
     },
-    { connection: redisConnection() },
+    {
+      connection: redisConnection(),
+      concurrency: Number(process.env.KILN_RUNNER_CONCURRENCY ?? 1),
+      maxStalledCount: Number(process.env.KILN_RUNNER_MAX_STALLED_COUNT ?? 1),
+      lockDuration: Number(process.env.KILN_RUNNER_LOCK_DURATION_MS ?? 30_000),
+    },
   );
   await worker.waitUntilReady();
 }

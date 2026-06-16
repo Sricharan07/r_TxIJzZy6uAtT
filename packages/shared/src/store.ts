@@ -7,8 +7,16 @@ import { PostgresKilnStore } from "./postgres-store.js";
 
 interface StoreState {
   users: User[];
+  sessions: AuthSession[];
   evals: Eval[];
   runs: RunResult[];
+}
+
+interface AuthSession {
+  tokenHash: string;
+  userId: string;
+  expiresAt: string;
+  createdAt: string;
 }
 
 export interface EvalSummary {
@@ -22,6 +30,9 @@ export interface KilnStore {
   getOrCreateDevUser(): Promise<User>;
   upsertUser(user: User): Promise<User>;
   getUser(id: string): Promise<User | null>;
+  createSession(tokenHash: string, userId: string, expiresAt: string): Promise<void>;
+  getSessionUserId(tokenHash: string): Promise<string | null>;
+  deleteSession(tokenHash: string): Promise<void>;
   createEval(userId: string, config: EvalConfig): Promise<Eval>;
   getEval(idOrShareToken: string): Promise<Eval | null>;
   listEvals(userId: string): Promise<EvalSummary[]>;
@@ -47,6 +58,7 @@ function newId(prefix: string): string {
 function defaultState(): StoreState {
   return {
     users: [MOCK_USER],
+    sessions: [],
     evals: [MOCK_EVAL],
     runs: [MOCK_RUN, MOCK_RUN_FIXED, MOCK_RUN_ERROR],
   };
@@ -85,6 +97,35 @@ export class JsonKilnStore implements KilnStore {
   async getUser(id: string): Promise<User | null> {
     const state = await this.load();
     return state.users.find((u) => u.id === id) ?? null;
+  }
+
+  async createSession(tokenHash: string, userId: string, expiresAt: string): Promise<void> {
+    const state = await this.load();
+    state.sessions = [
+      ...this.liveSessions(state.sessions).filter((session) => session.tokenHash !== tokenHash),
+      { tokenHash, userId, expiresAt, createdAt: nowIso() },
+    ];
+    await this.persist(state);
+  }
+
+  async getSessionUserId(tokenHash: string): Promise<string | null> {
+    const state = await this.load();
+    const liveSessions = this.liveSessions(state.sessions);
+    if (liveSessions.length !== state.sessions.length) {
+      state.sessions = liveSessions;
+      await this.persist(state);
+    }
+    const session = liveSessions.find((item) => item.tokenHash === tokenHash);
+    if (!session) return null;
+    return state.users.some((user) => user.id === session.userId) ? session.userId : null;
+  }
+
+  async deleteSession(tokenHash: string): Promise<void> {
+    const state = await this.load();
+    const next = state.sessions.filter((session) => session.tokenHash !== tokenHash);
+    if (next.length === state.sessions.length) return;
+    state.sessions = next;
+    await this.persist(state);
   }
 
   async createEval(userId: string, config: EvalConfig): Promise<Eval> {
@@ -173,7 +214,13 @@ export class JsonKilnStore implements KilnStore {
     if (this.state) return this.state;
     try {
       const raw = await readFile(this.filePath, "utf8");
-      this.state = JSON.parse(raw) as StoreState;
+      const parsed = JSON.parse(raw) as Partial<StoreState>;
+      this.state = {
+        users: parsed.users ?? [MOCK_USER],
+        sessions: parsed.sessions ?? [],
+        evals: parsed.evals ?? [MOCK_EVAL],
+        runs: parsed.runs ?? [MOCK_RUN, MOCK_RUN_FIXED, MOCK_RUN_ERROR],
+      };
     } catch {
       this.state = defaultState();
       await this.persist(this.state);
@@ -187,6 +234,11 @@ export class JsonKilnStore implements KilnStore {
     const tmp = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(tmp, JSON.stringify(state, null, 2));
     await rename(tmp, this.filePath);
+  }
+
+  private liveSessions(sessions: AuthSession[]): AuthSession[] {
+    const now = Date.now();
+    return sessions.filter((session) => Date.parse(session.expiresAt) > now);
   }
 }
 

@@ -3,26 +3,27 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --webpack",
-    "build": "next build --webpack",
+    "dev": "next dev",
+    "build": "next build",
     "start": "next start",
-    "lint": "eslint .",
-    "typecheck": "next typegen && tsc --noEmit"
+    "lint": "oxlint app components lib tests next.config.mjs",
+    "typecheck": "npm run build --workspace=@kiln/shared && tsc -p tsconfig.typecheck.json --noEmit --incremental false",
+    "test": "vitest run --pool=threads"
   },
   "dependencies": {
     "@kiln/runner": "*",
     "@kiln/shared": "*",
     "bullmq": "^5.78.0",
-    "next": "^16.2.7",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "next": "^16.2.9",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   },
   "devDependencies": {
     "@types/node": "^20.12.0",
-    "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0",
-    "eslint": "^9",
-    "eslint-config-next": "^16.2.7",
-    "typescript": "^5.4.0"
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "oxlint": "^1.70.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.8"
   }
 }
