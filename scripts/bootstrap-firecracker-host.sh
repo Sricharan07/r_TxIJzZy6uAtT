@@ -116,7 +116,10 @@ for unit in kiln-self-host kiln-web kiln-firecracker-host-manager kiln-runner-wo
   sed "s#__KILN_APP_DIR__#$escaped_app_dir#g" "$APP_DIR/infra/systemd/$unit.service" > "$SYSTEMD_DIR/$unit.service"
   chmod 0644 "$SYSTEMD_DIR/$unit.service"
 done
-cp "$ENV_FILE" /etc/kiln/app.env
+if [[ "$(realpath "$ENV_FILE")" != "/etc/kiln/app.env" ]]; then
+  cp "$ENV_FILE" /etc/kiln/app.env
+fi
+chmod 0600 /etc/kiln/app.env
 
 systemctl daemon-reload
 systemctl enable kiln-self-host.service kiln-web.service kiln-firecracker-host-manager.service kiln-runner-worker.service
