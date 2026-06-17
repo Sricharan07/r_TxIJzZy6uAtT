@@ -309,7 +309,7 @@ function OzPageInner() {
     await post("/edit-suite", { suiteDraft });
   }
 
-  if (!jobId) {
+  if (!jobId || !job) {
     return (
       <div className="oz-page">
         <section className="oz-hero">
