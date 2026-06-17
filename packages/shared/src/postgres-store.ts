@@ -418,25 +418,22 @@ export class PostgresKilnStore implements KilnStore {
     if (options.afterId) {
       const result = await this.query<OzEventRow>(
         `WITH cursor AS (
-           SELECT created_at, id::text AS id FROM oz_events WHERE job_id = $1 AND id::text = $2
+           SELECT event_seq FROM oz_events WHERE job_id = $1 AND id::text = $2
          )
          SELECT * FROM oz_events
          WHERE job_id = $1
-           AND (
-             created_at > COALESCE((SELECT created_at FROM cursor), '-infinity'::timestamptz)
-             OR (
-               created_at = (SELECT created_at FROM cursor)
-               AND id::text > COALESCE((SELECT id FROM cursor), '')
-             )
-           )
-         ORDER BY created_at ASC, id ASC
+           AND event_seq > COALESCE((SELECT event_seq FROM cursor), 0)
+         ORDER BY event_seq ASC
          LIMIT $3`,
         [jobId, options.afterId, limit],
       );
       return result.rows.map(toOzEvent);
     }
     const result = await this.query<OzEventRow>(
-      "SELECT * FROM oz_events WHERE job_id = $1 ORDER BY created_at ASC, id ASC LIMIT $2",
+      `SELECT * FROM (
+         SELECT * FROM oz_events WHERE job_id = $1 ORDER BY event_seq DESC LIMIT $2
+       ) latest_events
+       ORDER BY event_seq ASC`,
       [jobId, limit],
     );
     return result.rows.map(toOzEvent);

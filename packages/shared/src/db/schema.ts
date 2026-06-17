@@ -110,6 +110,23 @@ ALTER TABLE verdicts ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 ALTER TABLE verdicts ADD COLUMN IF NOT EXISTS evidence JSONB;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS grade_report JSONB;
 ALTER TABLE oz_events ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+CREATE SEQUENCE IF NOT EXISTS oz_events_event_seq_seq;
+ALTER TABLE oz_events ADD COLUMN IF NOT EXISTS event_seq BIGINT;
+ALTER TABLE oz_events ALTER COLUMN event_seq SET DEFAULT nextval('oz_events_event_seq_seq');
+WITH ordered AS (
+  SELECT id, row_number() OVER (ORDER BY created_at ASC, id ASC) AS rn
+  FROM oz_events
+  WHERE event_seq IS NULL
+),
+base AS (
+  SELECT COALESCE(MAX(event_seq), 0) AS max_seq FROM oz_events
+)
+UPDATE oz_events
+SET event_seq = ordered.rn + base.max_seq
+FROM ordered, base
+WHERE oz_events.id = ordered.id;
+SELECT setval('oz_events_event_seq_seq', GREATEST((SELECT COALESCE(MAX(event_seq), 1) FROM oz_events), 1), true);
+ALTER TABLE oz_events ALTER COLUMN event_seq SET NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_evals_user ON evals(user_id);
 CREATE INDEX IF NOT EXISTS idx_runs_eval ON runs(eval_id);
@@ -119,6 +136,7 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at
 CREATE INDEX IF NOT EXISTS idx_oz_jobs_user ON oz_jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_oz_jobs_updated ON oz_jobs(updated_at);
 CREATE INDEX IF NOT EXISTS idx_oz_events_job ON oz_events(job_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_oz_events_job_seq ON oz_events(job_id, event_seq);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_oz_events_dedupe ON oz_events(job_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_oz_artifacts_job ON oz_artifacts(job_id);
 	`;
@@ -194,6 +212,7 @@ export interface OzEventRow {
   dedupe_key: string | null;
   payload: unknown | null;
   created_at: string;
+  event_seq: string;
 }
 
 export interface OzArtifactRow {

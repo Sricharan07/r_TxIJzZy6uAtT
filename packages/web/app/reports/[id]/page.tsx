@@ -128,6 +128,22 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
       <ShareBar url={reportUrl} />
 
       <div className="report-body">
+        <section className="report-hero">
+          <div>
+            <p className="eyebrow">Agent readiness report</p>
+            <h1>{run.evalTitle}</h1>
+            <p>
+              {report
+                ? `${report.score.passedRuns}/${report.score.runs} runs passed with ${report.findings.length} finding${report.findings.length === 1 ? "" : "s"} surfaced.`
+                : `${passed}/${total} assertions passed in this run.`}
+            </p>
+          </div>
+          <div className={`report-grade-orb ${report?.taskPassed ?? ok ? "pass" : "fail"}`}>
+            <span>{report ? "Grade" : "Result"}</span>
+            <strong>{report?.score.letter ?? `${passed}/${total}`}</strong>
+          </div>
+        </section>
+
         {/* Stats grid (Decision 9) */}
         {report ? (
           <GradeSummary report={report} run={run} />

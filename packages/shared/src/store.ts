@@ -377,14 +377,14 @@ export class JsonKilnStore implements KilnStore {
 
   async listOzEvents(jobId: string, options: { afterId?: string; limit?: number } = {}): Promise<OzEvent[]> {
     const current = await this.load();
-    const after = options.afterId ? current.ozEvents.find((event) => event.id === options.afterId && event.jobId === jobId) : undefined;
     const limit = Math.min(Math.max(Math.floor(options.limit ?? 250), 1), 1_000);
-    const afterKey = after ? `${after.createdAt ?? ""}:${after.id ?? ""}` : "";
-    return current.ozEvents
-      .filter((event) => event.jobId === jobId)
-      .filter((event) => !after || `${event.createdAt ?? ""}:${event.id ?? ""}`.localeCompare(afterKey) > 0)
-      .sort((a, b) => `${a.createdAt ?? ""}:${a.id ?? ""}`.localeCompare(`${b.createdAt ?? ""}:${b.id ?? ""}`))
-      .slice(0, limit);
+    const jobEvents = current.ozEvents.filter((event) => event.jobId === jobId);
+    if (options.afterId) {
+      const afterIndex = jobEvents.findIndex((event) => event.id === options.afterId);
+      const start = afterIndex >= 0 ? afterIndex + 1 : 0;
+      return jobEvents.slice(start, start + limit);
+    }
+    return jobEvents.slice(Math.max(jobEvents.length - limit, 0));
   }
 
   async createOzArtifact(jobId: string, type: string, name: string, data?: unknown, blobUrl?: string): Promise<OzArtifact> {

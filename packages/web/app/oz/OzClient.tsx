@@ -77,6 +77,22 @@ function eventTone(event: OzEvent): string {
   return "info";
 }
 
+function eventTitle(event: OzEvent): string {
+  return event.kind
+    .replaceAll(".", " ")
+    .split(" ")
+    .map((word) => word.slice(0, 1).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function phaseIndexForStatus(status: OzJob["status"]): number {
+  const explicit = PHASES.findIndex((item) => item.status === status);
+  if (explicit >= 0) return explicit;
+  if (status === "blocked") return PHASES.findIndex((item) => item.status === "awaiting_approval");
+  if (status === "failed") return PHASES.findIndex((item) => item.status === "running");
+  return 0;
+}
+
 function OzPageInner() {
   const router = useRouter();
   const search = useSearchParams();
@@ -95,6 +111,7 @@ function OzPageInner() {
   const [editing, setEditing] = useState<string | null>(null);
   const [draftSuite, setDraftSuite] = useState<OzSuiteDraft | null>(null);
   const [streamVersion, setStreamVersion] = useState(0);
+  const [loadingJob, setLoadingJob] = useState(false);
   const live = job ? !TERMINAL.has(job.status) : false;
 
   async function load(id: string): Promise<string | null> {
@@ -116,10 +133,14 @@ function OzPageInner() {
   }
 
   useEffect(() => {
-    if (!jobId) return;
+    if (!jobId) {
+      setLoadingJob(false);
+      return;
+    }
     let cancelled = false;
     let source: EventSource | null = null;
     const start = async () => {
+      setLoadingJob(true);
       try {
         const cursor = await load(jobId);
         if (cancelled) return;
@@ -153,6 +174,8 @@ function OzPageInner() {
           else if (!message.includes("not found")) setError(message);
           router.replace("/oz");
         }
+      } finally {
+        if (!cancelled) setLoadingJob(false);
       }
     };
     void start();
@@ -178,6 +201,12 @@ function OzPageInner() {
     const artifact = artifacts.find((item) => item.type === "docs_map");
     return Array.isArray(artifact?.data) ? artifact.data as Array<{ surface: string; sourceUrl: string; signal: string; confidence: number }> : [];
   }, [artifacts]);
+  const currentPhase = job ? phaseIndexForStatus(job.status) : 0;
+  const latestEvent = visibleEvents.at(-1);
+  const docsCount = docsMap.length;
+  const scenarioCount = draftSuite?.scenarios.length ?? 0;
+  const runCount = job?.state.run?.runIds.length ?? 0;
+  const requiredSecrets = job?.state.productProfile?.requiredEnv.length ?? 0;
 
   async function startJob() {
     if (mode === "manual") {
@@ -309,47 +338,82 @@ function OzPageInner() {
     await post("/edit-suite", { suiteDraft });
   }
 
+  if (jobId && loadingJob && !job) {
+    return (
+      <div className="oz-page">
+        <section className="oz-loading-state">
+          <div className="oz-loading-orb" aria-hidden />
+          <p className="eyebrow">Oz agent</p>
+          <h1>Opening the job.</h1>
+          <p>Fetching the latest state, artifacts, and live event cursor.</p>
+        </section>
+      </div>
+    );
+  }
+
   if (!jobId || !job) {
     return (
       <div className="oz-page">
         <section className="oz-hero">
-          <h1>Give Oz your product URL.</h1>
-          <p>Oz discovers your docs, understands your API, generates an editable agent-readiness suite, and runs it against coding agents.</p>
-          <div className="oz-signin-card">
-            <div>
-              <strong>Sign in to start an Oz job</strong>
-              <span>Jobs, runs, and reports are saved to your workspace.</span>
+          <div className="oz-hero-copy">
+            <p className="eyebrow">Oz agent</p>
+            <h1>Agent readiness, made inspectable.</h1>
+            <p>Give Oz a product surface. It will build a suite, expose what it inferred, and show every run as it happens.</p>
+          </div>
+
+          <div className="oz-launch-grid">
+            <div className="oz-launch-panel">
+              <div className="oz-signin-card">
+                <div>
+                  <strong>Workspace access</strong>
+                  <span>Sign in so jobs, runs, and reports are tied to your account.</span>
+                </div>
+                <Link className="btn btn-primary github-btn" href="/auth/github">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+                    <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.62 2.29 6.69 5.47 7.78.4.08.55-.18.55-.39 0-.19-.01-.84-.01-1.52-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.03 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.37 7.37 0 0 1 8 4.02c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.13-1.87 3.82-3.65 4.03.29.26.54.75.54 1.52 0 1.09-.01 1.97-.01 2.24 0 .21.15.47.55.39A8.1 8.1 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z" />
+                  </svg>
+                  Continue with GitHub
+                </Link>
+              </div>
+
+              <label className="field-label" htmlFor="oz-product-url">Product URL</label>
+              <div className="oz-url-row">
+                <input id="oz-product-url" className="input oz-url-input" value={productUrl} onChange={(e) => setProductUrl(e.target.value)} placeholder="https://yourproduct.com" />
+                <button className="btn btn-primary" disabled={busy || !productUrl.trim()} onClick={startJob}>
+                  {busy ? "Starting..." : "Start Oz"}
+                </button>
+              </div>
+              <textarea className="input compact" value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="Optional focus, e.g. Node SDK, auth, webhooks, or first successful API call" />
+
+              <div className="oz-mode-grid">
+                {MODE_LABELS.map((item) => (
+                  <button key={item.mode} className={`oz-mode${mode === item.mode ? " selected" : ""}`} onClick={() => setMode(item.mode)}>
+                    <strong>{item.label}</strong>
+                    <span>{item.detail}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="oz-launch-actions">
+                <Link href="/evals/new" className="btn btn-ghost">Open Manual Builder</Link>
+              </div>
+              {authRequired && (
+                <div className="oz-auth-error">
+                  <span>GitHub sign-in is required before Oz can create a job.</span>
+                  <Link className="btn btn-primary github-btn" href="/auth/github">Continue with GitHub</Link>
+                </div>
+              )}
+              {error && <p className="form-error">{error}</p>}
             </div>
-            <Link className="btn btn-primary github-btn" href="/auth/github">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
-                <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.62 2.29 6.69 5.47 7.78.4.08.55-.18.55-.39 0-.19-.01-.84-.01-1.52-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.03 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.37 7.37 0 0 1 8 4.02c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.13-1.87 3.82-3.65 4.03.29.26.54.75.54 1.52 0 1.09-.01 1.97-.01 2.24 0 .21.15.47.55.39A8.1 8.1 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z" />
-              </svg>
-              Continue with GitHub
-            </Link>
+
+            <aside className="oz-signal-panel">
+              <p className="eyebrow">Run shape</p>
+              <div className="oz-signal-row"><span>1</span><strong>Discover</strong><em>Docs, SDKs, auth, examples</em></div>
+              <div className="oz-signal-row"><span>2</span><strong>Draft</strong><em>Scenarios, assertions, probes</em></div>
+              <div className="oz-signal-row"><span>3</span><strong>Observe</strong><em>Live agent trace and report</em></div>
+              <div className="oz-signal-foot">Transparent by default. Every inference has a visible artifact.</div>
+            </aside>
           </div>
-          <div className="oz-url-row">
-            <input className="input oz-url-input" value={productUrl} onChange={(e) => setProductUrl(e.target.value)} placeholder="https://yourproduct.com" />
-            <button className="btn btn-primary" disabled={busy || !productUrl.trim()} onClick={startJob}>
-              {busy ? "Starting..." : "Start Oz"}
-            </button>
-          </div>
-          <textarea className="input compact" value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="Optional goal, e.g. focus on Node SDK and webhooks" />
-          <div className="oz-mode-grid">
-            {MODE_LABELS.map((item) => (
-              <button key={item.mode} className={`oz-mode${mode === item.mode ? " selected" : ""}`} onClick={() => setMode(item.mode)}>
-                <strong>{item.label}</strong>
-                <span>{item.detail}</span>
-              </button>
-            ))}
-          </div>
-          <Link href="/evals/new" className="nav-link">Open Manual Builder</Link>
-          {authRequired && (
-            <div className="oz-auth-error">
-              <span>GitHub sign-in is required before Oz can create a job.</span>
-              <Link className="btn btn-primary github-btn" href="/auth/github">Continue with GitHub</Link>
-            </div>
-          )}
-          {error && <p className="form-error">{error}</p>}
         </section>
       </div>
     );
@@ -359,8 +423,9 @@ function OzPageInner() {
     <div className="oz-page">
       <div className="oz-header">
         <div>
-          <h1>Oz agentic eval</h1>
-          <p>{job ? `Current phase: ${phaseLabel(job.status)}` : "Loading job..."}</p>
+          <p className="eyebrow">Oz agent</p>
+          <h1>{job.state.productProfile?.productName ?? "Agentic evaluation"}</h1>
+          <p>{job.inputUrl}</p>
         </div>
         <div className="oz-header-actions">
           <span className={`oz-live-pill${live ? " active" : ""}`}><span />{live ? "Live" : "Idle"}</span>
@@ -371,27 +436,66 @@ function OzPageInner() {
         </div>
       </div>
 
+      <section className="oz-status-board">
+        <div>
+          <span>Phase</span>
+          <strong>{phaseLabel(job.status)}</strong>
+        </div>
+        <div>
+          <span>Docs</span>
+          <strong>{docsCount}</strong>
+        </div>
+        <div>
+          <span>Scenarios</span>
+          <strong>{scenarioCount}</strong>
+        </div>
+        <div>
+          <span>Runs</span>
+          <strong>{runCount}</strong>
+        </div>
+        <div>
+          <span>Secrets</span>
+          <strong>{requiredSecrets}</strong>
+        </div>
+      </section>
+
       {job && (
         <section className="oz-phase-strip" aria-label="Oz progress">
           {PHASES.map((phase) => {
-            const current = PHASES.findIndex((item) => item.status === job.status);
             const index = PHASES.findIndex((item) => item.status === phase.status);
-            const state = index < current || job.status === "complete" ? "done" : index === current ? "current" : "pending";
-            return <div key={phase.status} className={`oz-phase ${state}`}><span />{phase.label}</div>;
+            const state = index < currentPhase || job.status === "complete" ? "done" : index === currentPhase ? "current" : "pending";
+            return <div key={phase.status} className={`oz-phase ${state}`} aria-current={state === "current" ? "step" : undefined}><span />{phase.label}</div>;
           })}
         </section>
       )}
 
+      <section className="oz-now">
+        <div>
+          <p className="eyebrow">Current signal</p>
+          <strong>{latestEvent ? eventTitle(latestEvent) : "Waiting for activity"}</strong>
+          <span>{latestEvent?.message ?? "Oz will stream discovery, suite, and run events here."}</span>
+        </div>
+      </section>
+
       <section className="oz-timeline">
         <div className="oz-timeline-title">
-          <strong>Live activity</strong>
+          <div>
+            <p className="eyebrow">Live activity</p>
+            <strong>Event stream</strong>
+          </div>
           <span>{events.length} event{events.length === 1 ? "" : "s"} tracked</span>
         </div>
+        {visibleEvents.length === 0 && (
+          <div className="oz-empty-events">
+            <strong>No events yet</strong>
+            <p>Oz will show discovery, approval, run, and report events as they arrive.</p>
+          </div>
+        )}
         {visibleEvents.map((event) => (
           <div key={event.id ?? `${event.kind}-${event.createdAt}`} className={`oz-event ${eventTone(event)}`}>
             <span className="oz-event-dot" />
             <div>
-              <strong>{event.kind.replaceAll(".", " ")}</strong>
+              <strong>{eventTitle(event)}</strong>
               <p>{event.message}</p>
             </div>
           </div>
@@ -505,8 +609,8 @@ function OzPageInner() {
         <section className="oz-panel">
           <h2>Final DX report</h2>
           <p className="oz-summary">{job.state.report.summary}</p>
-          {job.state.report.recommendedFixes.map((fix) => (
-            <div className="finding-row" key={fix.title}>
+          {job.state.report.recommendedFixes.map((fix, index) => (
+            <div className="finding-row" key={`${fix.title}-${index}`}>
               <strong>{fix.title}</strong>
               <p>{fix.detail}</p>
             </div>
