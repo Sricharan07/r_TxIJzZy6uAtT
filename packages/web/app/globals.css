@@ -93,17 +93,24 @@ a { color: inherit; text-decoration: none; }
 }
 .nav-link:hover { background: var(--bg-elevated); color: var(--text-secondary); }
 .nav-link.active { color: var(--text-primary); background: var(--bg-elevated); }
-.nav-user {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--blue);
+.nav-signin {
+  min-height: 30px;
+  border-radius: var(--radius-md);
+  background: var(--text-primary);
+  color: #09090b;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  gap: 6px;
+  padding: 7px 11px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  transition: opacity 0.15s, transform 0.15s;
+}
+.nav-signin:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
 }
 
 /* ── REPORT PAGE (D6, D9, D11, D12, D17, D18) ── */
@@ -173,6 +180,11 @@ a { color: inherit; text-decoration: none; }
 .btn-primary:hover { opacity: 0.9; }
 .btn-ghost { background: var(--bg-elevated); color: var(--text-secondary); border: 1px solid var(--border); }
 .btn-ghost:hover { background: var(--border); color: var(--text-primary); }
+.github-btn {
+  background: var(--text-primary);
+  color: #09090b;
+}
+.github-btn:hover { opacity: 0.92; }
 
 .report-body { padding: 20px; }
 
@@ -1028,6 +1040,35 @@ textarea.input { min-height: 80px; }
 .oz-url-input {
   min-height: 40px;
 }
+.oz-signin-card,
+.oz-auth-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: linear-gradient(135deg, rgba(250, 250, 250, 0.08), rgba(37, 99, 235, 0.14));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+.oz-signin-card strong,
+.oz-auth-error span {
+  display: block;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.oz-signin-card span {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.oz-auth-error {
+  border-color: rgba(37, 99, 235, 0.45);
+  background: var(--blue-bg);
+}
 .oz-mode-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1183,6 +1224,23 @@ textarea.input { min-height: 80px; }
   .oz-url-row,
   .oz-doc-row {
     grid-template-columns: 1fr;
+  }
+  .nav {
+    align-items: flex-start;
+    gap: 10px;
+    flex-direction: column;
+  }
+  .nav-links {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .nav-signin {
+    margin-left: auto;
+  }
+  .oz-signin-card .btn,
+  .oz-auth-error .btn {
+    width: 100%;
+    justify-content: center;
   }
 }
 

@@ -36,6 +36,7 @@ function OzPageInner() {
   const [events, setEvents] = useState<OzEvent[]>([]);
   const [artifacts, setArtifacts] = useState<OzArtifact[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [authRequired, setAuthRequired] = useState(false);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [draftSuite, setDraftSuite] = useState<OzSuiteDraft | null>(null);
@@ -84,6 +85,7 @@ function OzPageInner() {
     }
     setBusy(true);
     setError(null);
+    setAuthRequired(false);
     try {
       const res = await fetch("/api/oz/jobs", {
         method: "POST",
@@ -91,7 +93,10 @@ function OzPageInner() {
         body: JSON.stringify({ productUrl, mode, userGoal: goal || undefined, preferredLanguage: "node", agentTargets: ["claude-code"] }),
       });
       const body = (await res.json()) as JobResponse;
-      if (!res.ok) throw new Error(body.error ?? "Could not create Oz job.");
+      if (!res.ok) {
+        if (res.status === 401) setAuthRequired(true);
+        throw new Error(body.error ?? "Could not create Oz job.");
+      }
       router.push(`/oz?job=${body.job.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create Oz job.");
@@ -161,6 +166,18 @@ function OzPageInner() {
         <section className="oz-hero">
           <h1>Give Oz your product URL.</h1>
           <p>Oz discovers your docs, understands your API, generates an editable agent-readiness suite, and runs it against coding agents.</p>
+          <div className="oz-signin-card">
+            <div>
+              <strong>Sign in to start an Oz job</strong>
+              <span>Jobs, runs, and reports are saved to your workspace.</span>
+            </div>
+            <Link className="btn btn-primary github-btn" href="/auth/github">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+                <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.62 2.29 6.69 5.47 7.78.4.08.55-.18.55-.39 0-.19-.01-.84-.01-1.52-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.03 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.37 7.37 0 0 1 8 4.02c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.13-1.87 3.82-3.65 4.03.29.26.54.75.54 1.52 0 1.09-.01 1.97-.01 2.24 0 .21.15.47.55.39A8.1 8.1 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z" />
+              </svg>
+              Continue with GitHub
+            </Link>
+          </div>
           <div className="oz-url-row">
             <input className="input oz-url-input" value={productUrl} onChange={(e) => setProductUrl(e.target.value)} placeholder="https://yourproduct.com" />
             <button className="btn btn-primary" disabled={busy || !productUrl.trim()} onClick={startJob}>
@@ -177,6 +194,12 @@ function OzPageInner() {
             ))}
           </div>
           <Link href="/evals/new" className="nav-link">Open Manual Builder</Link>
+          {authRequired && (
+            <div className="oz-auth-error">
+              <span>GitHub sign-in is required before Oz can create a job.</span>
+              <Link className="btn btn-primary github-btn" href="/auth/github">Continue with GitHub</Link>
+            </div>
+          )}
           {error && <p className="form-error">{error}</p>}
         </section>
       </div>
