@@ -25,6 +25,12 @@ interface StreamResponse {
   error?: string;
 }
 
+interface ActionResponse {
+  job?: OzJob;
+  ok?: boolean;
+  error?: string;
+}
+
 const MODE_LABELS: Array<{ mode: OzMode; label: string; detail: string }> = [
   { mode: "copilot", label: "Copilot", detail: "Oz discovers and generates; you approve before run." },
   { mode: "autopilot", label: "Autopilot", detail: "Oz runs automatically when no secrets block it." },
@@ -210,6 +216,53 @@ function OzPageInner() {
     }
   }
 
+  async function stopJob() {
+    if (!job) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}/stop`, { method: "POST" });
+      const data = (await res.json()) as ActionResponse;
+      if (!res.ok) throw new Error(data.error ?? "Could not stop Oz job.");
+      await load(job.id);
+      setStreamVersion((version) => version + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not stop Oz job.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearCurrentJob() {
+    setJob(null);
+    setEvents([]);
+    setVisibleEvents([]);
+    setEventQueue([]);
+    setArtifacts([]);
+    setDraftSuite(null);
+    router.push("/oz");
+  }
+
+  async function deleteJob(method: "DELETE" | "TERMINATE") {
+    if (!job) return;
+    const destructive = method === "TERMINATE" ? "terminate this job and remove its run data" : "delete this saved job";
+    if (!window.confirm(`Are you sure you want to ${destructive}?`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = method === "TERMINATE"
+        ? await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}/terminate`, { method: "POST" })
+        : await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}`, { method: "DELETE" });
+      const data = (await res.json()) as ActionResponse;
+      if (!res.ok) throw new Error(data.error ?? "Could not clean up Oz job.");
+      await clearCurrentJob();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not clean up Oz job.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function updateScenario(id: string, patch: Partial<OzScenario>) {
     if (!draftSuite) return;
     setDraftSuite({
@@ -300,6 +353,9 @@ function OzPageInner() {
         </div>
         <div className="oz-header-actions">
           <span className={`oz-live-pill${live ? " active" : ""}`}><span />{live ? "Live" : "Idle"}</span>
+          {job && live && <button className="btn btn-ghost" disabled={busy} onClick={stopJob}>{busy ? "Stopping..." : "Stop"}</button>}
+          {job && <button className="btn btn-danger" disabled={busy} onClick={() => void deleteJob("TERMINATE")}>Terminate</button>}
+          {job && <button className="btn btn-ghost danger-text" disabled={busy} onClick={() => void deleteJob("DELETE")}>Delete</button>}
           <Link className="btn btn-ghost" href="/oz">New Oz Job</Link>
         </div>
       </div>

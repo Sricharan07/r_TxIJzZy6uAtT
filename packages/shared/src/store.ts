@@ -61,10 +61,13 @@ export interface KilnStore {
   getRun(id: string): Promise<RunResult | null>;
   listRuns(evalId: string): Promise<RunResult[]>;
   saveRun(run: RunResult): Promise<void>;
+  stopRuns(runIds: string[], reason: string): Promise<void>;
+  deleteRuns(runIds: string[], evalId?: string): Promise<void>;
   createOzJob(userId: string, inputUrl: string, mode: OzMode, state: OzAgentState): Promise<OzJob>;
   getOzJob(id: string): Promise<OzJob | null>;
   listOzJobs(userId: string): Promise<OzJob[]>;
   saveOzJob(job: OzJob): Promise<void>;
+  deleteOzJob(jobId: string): Promise<void>;
   appendOzEvent(event: OzEvent): Promise<OzEvent>;
   listOzEvents(jobId: string, options?: { afterId?: string; limit?: number }): Promise<OzEvent[]>;
   createOzArtifact(jobId: string, type: string, name: string, data?: unknown, blobUrl?: string): Promise<OzArtifact>;
@@ -244,6 +247,34 @@ export class JsonKilnStore implements KilnStore {
     await this.persist(state);
   }
 
+  async stopRuns(runIds: string[], reason: string): Promise<void> {
+    if (runIds.length === 0) return;
+    const state = await this.load();
+    const now = nowIso();
+    for (const run of state.runs) {
+      if (!runIds.includes(run.id) || (run.status !== "pending" && run.status !== "running")) continue;
+      run.status = "errored";
+      run.errorType = "platform";
+      run.finishedAt = run.finishedAt ?? now;
+      run.events = [
+        ...run.events,
+        { t: run.durationSec ?? 0, kind: "fail", text: "Run stopped", annotation: reason },
+      ];
+    }
+    await this.persist(state);
+  }
+
+  async deleteRuns(runIds: string[], evalId?: string): Promise<void> {
+    if (runIds.length === 0 && !evalId) return;
+    const state = await this.load();
+    const ids = new Set(runIds);
+    state.runs = state.runs.filter((run) => !ids.has(run.id));
+    if (evalId && !state.runs.some((run) => run.evalId === evalId)) {
+      state.evals = state.evals.filter((evalRecord) => evalRecord.id !== evalId);
+    }
+    await this.persist(state);
+  }
+
   private async load(): Promise<StoreState> {
     if (this.state) return this.state;
     try {
@@ -314,6 +345,15 @@ export class JsonKilnStore implements KilnStore {
     const next: OzJob = { ...job, updatedAt: nowIso() };
     if (idx >= 0) current.ozJobs[idx] = next;
     else current.ozJobs.push(next);
+    await this.persist(current);
+  }
+
+  async deleteOzJob(jobId: string): Promise<void> {
+    const current = await this.load();
+    current.ozJobs = current.ozJobs.filter((job) => job.id !== jobId);
+    current.ozEvents = current.ozEvents.filter((event) => event.jobId !== jobId);
+    current.ozArtifacts = current.ozArtifacts.filter((artifact) => artifact.jobId !== jobId);
+    current.ozFeedbackEvents = current.ozFeedbackEvents.filter((event) => event.jobId !== jobId);
     await this.persist(current);
   }
 

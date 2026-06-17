@@ -301,6 +301,53 @@ export class PostgresKilnStore implements KilnStore {
     }
   }
 
+  async stopRuns(runIds: string[], reason: string): Promise<void> {
+    if (runIds.length === 0) return;
+    await this.query(
+      `UPDATE runs
+       SET status = 'errored',
+           error_type = COALESCE(error_type, 'platform'),
+           finished_at = COALESCE(finished_at, now()),
+           grade_report = COALESCE(grade_report, jsonb_build_object(
+             'summary', $2::text,
+             'score', jsonb_build_object(
+               'letter', 'F',
+               'passedRuns', 0,
+               'runs', 1,
+               'passRate', 0,
+               'confidenceInterval', jsonb_build_array(0, 0)
+             ),
+             'findings', '[]'::jsonb,
+             'evidence', '[]'::jsonb,
+             'recommendations', '[]'::jsonb
+           ))
+       WHERE id::text = ANY($1) AND status IN ('pending', 'running')`,
+      [runIds, reason],
+    );
+  }
+
+  async deleteRuns(runIds: string[], evalId?: string): Promise<void> {
+    if (runIds.length === 0 && !evalId) return;
+    const client = await this.pool.connect();
+    try {
+      await this.schemaReady;
+      await client.query("BEGIN");
+      if (runIds.length > 0) {
+        await client.query("DELETE FROM verdicts WHERE run_id::text = ANY($1)", [runIds]);
+        await client.query("DELETE FROM runs WHERE id::text = ANY($1)", [runIds]);
+      }
+      if (evalId) {
+        await client.query("DELETE FROM evals WHERE id::text = $1 AND NOT EXISTS (SELECT 1 FROM runs WHERE eval_id::text = $1)", [evalId]);
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   async createOzJob(userId: string, inputUrl: string, mode: OzMode, state: OzAgentState): Promise<OzJob> {
     const result = await this.query<OzJobRow>(
       `INSERT INTO oz_jobs (id, user_id, input_url, mode, status, state)
@@ -331,6 +378,10 @@ export class PostgresKilnStore implements KilnStore {
        WHERE id = $1`,
       [job.id, job.mode, job.status, JSON.stringify(job.state)],
     );
+  }
+
+  async deleteOzJob(jobId: string): Promise<void> {
+    await this.query("DELETE FROM oz_jobs WHERE id::text = $1", [jobId]);
   }
 
   async appendOzEvent(event: OzEvent): Promise<OzEvent> {

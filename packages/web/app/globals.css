@@ -180,6 +180,14 @@ a { color: inherit; text-decoration: none; }
 .btn-primary:hover { opacity: 0.9; }
 .btn-ghost { background: var(--bg-elevated); color: var(--text-secondary); border: 1px solid var(--border); }
 .btn-ghost:hover { background: var(--border); color: var(--text-primary); }
+.btn-danger {
+  background: rgba(239, 68, 68, 0.16);
+  color: #fecaca;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+.btn-danger:hover { background: rgba(239, 68, 68, 0.24); }
+.danger-text { color: #fca5a5; }
+.danger-text:hover { color: #fecaca; border-color: rgba(239, 68, 68, 0.35); }
 .github-btn {
   background: var(--text-primary);
   color: #09090b;

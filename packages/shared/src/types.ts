@@ -639,6 +639,8 @@ export interface OzAgentState {
     result?: unknown;
   };
   report?: OzReport;
+  error?: string;
+  stoppedAt?: string;
 }
 
 export type OzEventKind =

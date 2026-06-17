@@ -10,6 +10,18 @@ function activeJobs(): Set<string> {
   return globalOz.__ozActiveJobs;
 }
 
+function redisConnection(): { host: string; port: number; password?: string; tls?: Record<string, never> } | null {
+  const raw = process.env.REDIS_URL;
+  if (!raw) return null;
+  const url = new URL(raw);
+  return {
+    host: url.hostname,
+    port: Number(url.port || 6379),
+    password: url.password || undefined,
+    tls: url.protocol === "rediss:" ? {} : undefined,
+  };
+}
+
 const DESTRUCTIVE_COMMAND = /\b(rm\s+-rf\s+\/|mkfs|shutdown|reboot|drop\s+database|delete\s+from\s+\w+\s*;)\b/i;
 
 function validateSuiteDraft(suiteDraft: OzSuiteDraft | undefined): string[] {
@@ -59,6 +71,34 @@ function requireValidSuite(suiteDraft: OzSuiteDraft | undefined): OzSuiteDraft {
   const errors = validateSuiteDraft(suiteDraft);
   if (errors.length > 0) throw new Error(errors.join(" "));
   return suiteDraft as OzSuiteDraft;
+}
+
+async function removeQueuedRuns(runIds: string[]): Promise<void> {
+  if (runIds.length === 0) return;
+  const mode = process.env.KILN_QUEUE_MODE ?? (process.env.NODE_ENV === "production" ? "redis" : "local");
+  if (mode === "local") return;
+  if (mode !== "redis") throw new Error(`Unknown KILN_QUEUE_MODE "${mode}". Expected "local" or "redis".`);
+  const connection = redisConnection();
+  if (!connection) return;
+  const bullmqSpecifier = "bullmq";
+  const { Queue } = (await import(bullmqSpecifier)) as {
+    Queue: new (
+      name: string,
+      options: Record<string, unknown>,
+    ) => {
+      getJob(id: string): Promise<{ remove(): Promise<void> } | null>;
+      close(): Promise<void>;
+    };
+  };
+  const queue = new Queue("kiln-runs", { connection });
+  try {
+    await Promise.all(runIds.map(async (runId) => {
+      const job = await queue.getJob(runId);
+      await job?.remove().catch(() => undefined);
+    }));
+  } finally {
+    await queue.close();
+  }
 }
 
 export async function createOzJob(input: {
@@ -297,6 +337,47 @@ export async function runOzSuite(
     payload: { evalId, runIds },
   });
   return next;
+}
+
+export async function stopOzJob(jobId: string, userId: string): Promise<OzJob> {
+  const job = await requireOwnedOzJob(jobId, userId);
+  const runIds = job.state.run?.runIds ?? [];
+  await removeQueuedRuns(runIds);
+  await getStore().stopRuns(runIds, "Stopped by user before completion.");
+  const next: OzJob = {
+    ...job,
+    status: "failed",
+    state: {
+      ...job.state,
+      error: "Stopped by user before completion.",
+      stoppedAt: new Date().toISOString(),
+    },
+  };
+  activeJobs().delete(jobId);
+  await getStore().saveOzJob(next);
+  await getStore().appendOzEvent({
+    jobId,
+    kind: "job.failed",
+    phase: "failed",
+    message: "Stopped by user.",
+    dedupeKey: `${jobId}:user-stop`,
+    payload: { severity: "warning" },
+  });
+  return next;
+}
+
+export async function deleteOzJob(jobId: string, userId: string, options: { stopFirst?: boolean; deleteRunRecords?: boolean } = {}): Promise<void> {
+  const job = await requireOwnedOzJob(jobId, userId);
+  const runIds = job.state.run?.runIds ?? [];
+  if (options.stopFirst) {
+    await removeQueuedRuns(runIds);
+    await getStore().stopRuns(runIds, "Terminated by user.");
+    activeJobs().delete(jobId);
+  }
+  if (options.deleteRunRecords) {
+    await getStore().deleteRuns(runIds, job.state.run?.evalId);
+  }
+  await getStore().deleteOzJob(jobId);
 }
 
 export async function maybeRefreshOzRunReport(job: OzJob): Promise<void> {
