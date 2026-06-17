@@ -98,6 +98,11 @@ export function startOzDiscovery(jobId: string): void {
 export async function requireOwnedOzJob(jobId: string, userId: string): Promise<OzJob> {
   const job = await getStore().getOzJob(jobId);
   if (!job || job.userId !== userId) throw new Error("Oz job not found");
+  return job;
+}
+
+export async function refreshOwnedOzJob(jobId: string, userId: string): Promise<OzJob> {
+  const job = await requireOwnedOzJob(jobId, userId);
   await maybeRefreshOzRunReport(job);
   const refreshed = await getStore().getOzJob(jobId);
   return refreshed ?? job;
@@ -279,7 +284,7 @@ export async function runOzSuite(
       run: {
         evalId,
         runIds,
-        liveEvents: [],
+        observedEventCount: 0,
       },
     },
   };
@@ -298,10 +303,11 @@ export async function maybeRefreshOzRunReport(job: OzJob): Promise<void> {
   const runIds = job.state.run?.runIds ?? [];
   if (runIds.length === 0) return;
   const runs = (await Promise.all(runIds.map((runId) => getStore().getRun(runId)))).filter((run) => run !== null);
-  const liveCount = job.state.run?.liveEvents.length ?? 0;
+  const liveCount = job.state.run?.observedEventCount ?? job.state.run?.liveEvents?.length ?? 0;
   const liveEvents = runs.flatMap((run) => run.events);
-  for (const event of liveEvents.slice(liveCount)) {
-    await getStore().appendOzEvent(observeRunEvent(job.id, "running", event));
+  for (const [offset, event] of liveEvents.slice(liveCount).entries()) {
+    const index = liveCount + offset;
+    await getStore().appendOzEvent(observeRunEvent(job.id, "running", event, `${job.id}:run-event:${index}`));
   }
   const done = runs.length === runIds.length && runs.every((run) => run.status === "completed" || run.status === "errored");
   if (!done) {
@@ -313,7 +319,7 @@ export async function maybeRefreshOzRunReport(job: OzJob): Promise<void> {
           run: {
             evalId: job.state.run?.evalId,
             runIds,
-            liveEvents,
+            observedEventCount: liveEvents.length,
           },
         },
       });
@@ -322,6 +328,15 @@ export async function maybeRefreshOzRunReport(job: OzJob): Promise<void> {
   }
   if (job.status === "complete") return;
   const report = buildOzReport({ ...job.state, run: { evalId: job.state.run?.evalId, runIds, liveEvents } }, runs);
+  const result = runs.map((run) => ({
+    id: run.id,
+    status: run.status,
+    errorType: run.errorType,
+    durationSec: run.durationSec,
+    totalSteps: run.totalSteps,
+    tokens: run.tokens,
+    verdicts: run.verdicts.length,
+  }));
   await getStore().saveOzJob({
     ...job,
     status: "complete",
@@ -330,8 +345,8 @@ export async function maybeRefreshOzRunReport(job: OzJob): Promise<void> {
       run: {
         evalId: job.state.run?.evalId,
         runIds,
-        liveEvents,
-        result: runs,
+        observedEventCount: liveEvents.length,
+        result,
       },
       report,
     },
@@ -341,6 +356,7 @@ export async function maybeRefreshOzRunReport(job: OzJob): Promise<void> {
     kind: "report.created",
     phase: "complete",
     message: report.summary,
+    dedupeKey: `${job.id}:report`,
     payload: { report },
   });
 }

@@ -34,11 +34,11 @@ describe("FirecrackerSandbox", () => {
     const sandbox = new FirecrackerSandbox("run-1", "https://manager.example", "token", fetchImpl);
     await sandbox.boot();
     await sandbox.writeFile("README.md", "hello");
-    expect(await sandbox.exec("npm test")).toEqual({ stdout: "ok", stderr: "", code: 0 });
+    expect(await sandbox.exec("npm test", undefined, { timeoutMs: 45_000 })).toEqual({ stdout: "ok", stderr: "", code: 0 });
     const lines: string[] = [];
     expect(await sandbox.execStreaming("npm test", undefined, (_stream, line) => {
       lines.push(line);
-    })).toEqual({
+    }, { timeoutMs: 90_000 })).toEqual({
       stdout: "first\n",
       stderr: "",
       code: 0,
@@ -60,6 +60,8 @@ describe("FirecrackerSandbox", () => {
       "DELETE",
     ]);
     expect(new Headers(calls[0]?.init.headers).get("Authorization")).toBe("Bearer token");
+    expect(JSON.parse(String(calls[2]?.init.body))).toMatchObject({ timeoutMs: 45_000 });
+    expect(JSON.parse(String(calls[3]?.init.body))).toMatchObject({ timeoutMs: 90_000 });
   });
 
   it("selects the local sandbox by default and Firecracker when configured", () => {

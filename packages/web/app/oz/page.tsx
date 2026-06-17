@@ -11,11 +11,37 @@ interface JobResponse {
   error?: string;
 }
 
+interface EventsResponse {
+  events?: OzEvent[];
+  cursor?: string | null;
+  error?: string;
+}
+
+interface StreamResponse {
+  job: OzJob;
+  artifacts: OzArtifact[];
+  events: OzEvent[];
+  cursor?: string | null;
+  error?: string;
+}
+
 const MODE_LABELS: Array<{ mode: OzMode; label: string; detail: string }> = [
   { mode: "copilot", label: "Copilot", detail: "Oz discovers and generates; you approve before run." },
   { mode: "autopilot", label: "Autopilot", detail: "Oz runs automatically when no secrets block it." },
   { mode: "manual", label: "Manual", detail: "Use the existing low-level builder." },
 ];
+
+const PHASES: Array<{ status: OzJob["status"]; label: string }> = [
+  { status: "discovering", label: "Discover" },
+  { status: "profiling", label: "Profile" },
+  { status: "mapping_docs", label: "Map" },
+  { status: "generating_suite", label: "Suite" },
+  { status: "awaiting_approval", label: "Approve" },
+  { status: "running", label: "Run" },
+  { status: "complete", label: "Report" },
+];
+
+const TERMINAL = new Set<OzJob["status"]>(["awaiting_approval", "blocked", "failed", "complete"]);
 
 function confidence(n?: number): string {
   return `${Math.round((n ?? 0) * 100)}%`;
@@ -23,6 +49,26 @@ function confidence(n?: number): string {
 
 function phaseLabel(status: OzJob["status"]): string {
   return status.replaceAll("_", " ");
+}
+
+function mergeEvents(current: OzEvent[], incoming: OzEvent[]): OzEvent[] {
+  const seen = new Set(current.map((event) => event.id ?? `${event.kind}:${event.createdAt}:${event.message}`));
+  const next = [...current];
+  for (const event of incoming) {
+    const key = event.id ?? `${event.kind}:${event.createdAt}:${event.message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(event);
+  }
+  return next;
+}
+
+function eventTone(event: OzEvent): string {
+  const severity = typeof event.payload?.severity === "string" ? event.payload.severity : "";
+  if (event.kind.includes("failed") || event.kind.includes("blocked") || severity === "critical") return "critical";
+  if (severity === "warning") return "warning";
+  if (event.kind === "report.created" || event.kind === "suite.ready") return "success";
+  return "info";
 }
 
 function OzPageInner() {
@@ -34,44 +80,82 @@ function OzPageInner() {
   const [goal, setGoal] = useState("");
   const [job, setJob] = useState<OzJob | null>(null);
   const [events, setEvents] = useState<OzEvent[]>([]);
+  const [visibleEvents, setVisibleEvents] = useState<OzEvent[]>([]);
+  const [eventQueue, setEventQueue] = useState<OzEvent[]>([]);
   const [artifacts, setArtifacts] = useState<OzArtifact[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState(false);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [draftSuite, setDraftSuite] = useState<OzSuiteDraft | null>(null);
+  const [streamVersion, setStreamVersion] = useState(0);
+  const live = job ? !TERMINAL.has(job.status) : false;
 
-  async function load(id: string) {
+  async function load(id: string): Promise<string | null> {
     const [jobRes, eventsRes] = await Promise.all([
       fetch(`/api/oz/jobs/${encodeURIComponent(id)}`),
-      fetch(`/api/oz/jobs/${encodeURIComponent(id)}/events`),
+      fetch(`/api/oz/jobs/${encodeURIComponent(id)}/events?limit=250`),
     ]);
     const jobBody = (await jobRes.json()) as JobResponse;
-    const eventsBody = (await eventsRes.json()) as { events?: OzEvent[]; error?: string };
+    const eventsBody = (await eventsRes.json()) as EventsResponse;
     if (!jobRes.ok) throw new Error(jobBody.error ?? "Could not load Oz job.");
     setJob(jobBody.job);
     setArtifacts(jobBody.artifacts ?? []);
     setDraftSuite(jobBody.job.state.suiteDraft ?? null);
-    setEvents(eventsBody.events ?? []);
+    const nextEvents = eventsBody.events ?? [];
+    setEvents(nextEvents);
+    setVisibleEvents(nextEvents.slice(-80));
+    setEventQueue([]);
+    return eventsBody.cursor ?? nextEvents.at(-1)?.id ?? null;
   }
 
   useEffect(() => {
     if (!jobId) return;
     let cancelled = false;
-    const tick = async () => {
+    let source: EventSource | null = null;
+    const start = async () => {
       try {
-        await load(jobId);
+        const cursor = await load(jobId);
+        if (cancelled) return;
+        source = new EventSource(`/api/oz/jobs/${encodeURIComponent(jobId)}/stream${cursor ? `?after=${encodeURIComponent(cursor)}` : ""}`);
+        source.addEventListener("oz", (message) => {
+          const data = JSON.parse((message as MessageEvent).data) as StreamResponse;
+          if (data.error) {
+            setError(data.error);
+            return;
+          }
+          setJob(data.job);
+          setArtifacts(data.artifacts ?? []);
+          setDraftSuite(data.job.state.suiteDraft ?? null);
+          setEvents((current) => mergeEvents(current, data.events ?? []));
+          setEventQueue((current) => mergeEvents(current, data.events ?? []));
+          if (TERMINAL.has(data.job.status)) source?.close();
+        });
+        source.addEventListener("error", () => {
+          source?.close();
+        });
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Could not load Oz job.");
       }
     };
-    void tick();
-    const id = setInterval(() => void tick(), 1500);
+    void start();
     return () => {
       cancelled = true;
-      clearInterval(id);
+      source?.close();
     };
-  }, [jobId]);
+  }, [jobId, streamVersion]);
+
+  useEffect(() => {
+    if (eventQueue.length === 0) return;
+    const id = setInterval(() => {
+      setEventQueue((current) => {
+        const [next, ...rest] = current;
+        if (next) setVisibleEvents((visible) => mergeEvents(visible, [next]).slice(-80));
+        return rest;
+      });
+    }, 420);
+    return () => clearInterval(id);
+  }, [eventQueue.length]);
 
   const docsMap = useMemo(() => {
     const artifact = artifacts.find((item) => item.type === "docs_map");
@@ -118,6 +202,7 @@ function OzPageInner() {
       const data = (await res.json()) as JobResponse;
       if (!res.ok) throw new Error(data.error ?? "Oz request failed.");
       await load(job.id);
+      setStreamVersion((version) => version + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Oz request failed.");
     } finally {
@@ -210,15 +295,33 @@ function OzPageInner() {
     <div className="oz-page">
       <div className="oz-header">
         <div>
-          <h1>Oz is mapping your product</h1>
+          <h1>Oz agentic eval</h1>
           <p>{job ? `Current phase: ${phaseLabel(job.status)}` : "Loading job..."}</p>
         </div>
-        <Link className="btn btn-ghost" href="/oz">New Oz Job</Link>
+        <div className="oz-header-actions">
+          <span className={`oz-live-pill${live ? " active" : ""}`}><span />{live ? "Live" : "Idle"}</span>
+          <Link className="btn btn-ghost" href="/oz">New Oz Job</Link>
+        </div>
       </div>
 
+      {job && (
+        <section className="oz-phase-strip" aria-label="Oz progress">
+          {PHASES.map((phase) => {
+            const current = PHASES.findIndex((item) => item.status === job.status);
+            const index = PHASES.findIndex((item) => item.status === phase.status);
+            const state = index < current || job.status === "complete" ? "done" : index === current ? "current" : "pending";
+            return <div key={phase.status} className={`oz-phase ${state}`}><span />{phase.label}</div>;
+          })}
+        </section>
+      )}
+
       <section className="oz-timeline">
-        {events.map((event) => (
-          <div key={event.id ?? `${event.kind}-${event.createdAt}`} className={`oz-event ${event.kind.includes("failed") || event.kind.includes("blocked") ? "critical" : ""}`}>
+        <div className="oz-timeline-title">
+          <strong>Live activity</strong>
+          <span>{events.length} event{events.length === 1 ? "" : "s"} tracked</span>
+        </div>
+        {visibleEvents.map((event) => (
+          <div key={event.id ?? `${event.kind}-${event.createdAt}`} className={`oz-event ${eventTone(event)}`}>
             <span className="oz-event-dot" />
             <div>
               <strong>{event.kind.replaceAll(".", " ")}</strong>
@@ -226,6 +329,7 @@ function OzPageInner() {
             </div>
           </div>
         ))}
+        {eventQueue.length > 0 && <div className="oz-event oz-event-pending"><span className="oz-event-dot" /><p>{eventQueue.length} update{eventQueue.length === 1 ? "" : "s"} queued</p></div>}
       </section>
 
       {job?.state.productProfile && (

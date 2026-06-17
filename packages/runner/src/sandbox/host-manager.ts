@@ -28,8 +28,8 @@ interface BootedVm {
 export interface FirecrackerDriver {
   boot(id: string): Promise<string>;
   writeFile(id: string, path: string, contents: string): Promise<void>;
-  exec(id: string, cmd: string, cwd?: string): Promise<ExecResult>;
-  execStreaming(id: string, cmd: string, cwd: string | undefined, onLine: ExecLineHandler): Promise<ExecResult>;
+  exec(id: string, cmd: string, cwd?: string, timeoutMs?: number): Promise<ExecResult>;
+  execStreaming(id: string, cmd: string, cwd: string | undefined, onLine: ExecLineHandler, timeoutMs?: number): Promise<ExecResult>;
   readFile(id: string, path: string): Promise<string | null>;
   httpRequest(id: string, request: HttpRequest): Promise<HttpResult>;
   httpGet(id: string, url: string): Promise<HttpResult>;
@@ -53,6 +53,8 @@ export interface FirecrackerHostConfig {
 interface CommandResult extends ExecResult {}
 type ExecStream = "stdout" | "stderr";
 type ExecLineHandler = (stream: ExecStream, line: string) => void | Promise<void>;
+const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
+const MAX_COMMAND_TIMEOUT_MS = 3_700_000;
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -70,7 +72,7 @@ function runFile(command: string, args: string[]): Promise<void> {
 function runCommand(
   command: string,
   args: string[],
-  timeoutMs = 30_000,
+  timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
   onLine?: ExecLineHandler,
 ): Promise<CommandResult> {
   return new Promise((resolve) => {
@@ -101,7 +103,7 @@ function runCommand(
         if (pending[stream]) emit(stream, pending[stream]);
       }
       void callbacks.then(
-        () => resolve({ stdout, stderr: stderr || error?.message || (timedOut ? "Command timed out." : ""), code }),
+        () => resolve({ stdout, stderr: [stderr, error?.message, timedOut ? "Command timed out." : ""].filter(Boolean).join("\n"), code }),
         (callbackError: unknown) =>
           resolve({ stdout, stderr: callbackError instanceof Error ? callbackError.message : String(callbackError), code: 1 }),
       );
@@ -234,12 +236,12 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
     if (result.code !== 0) throw new Error(`Guest file write failed: ${result.stderr}`);
   }
 
-  async exec(id: string, cmd: string, cwd?: string): Promise<ExecResult> {
-    return this.ssh(id, cwd ? `cd ${shellQuote(cwd)} && ${cmd}` : cmd);
+  async exec(id: string, cmd: string, cwd?: string, timeoutMs?: number): Promise<ExecResult> {
+    return this.ssh(id, cwd ? `cd ${shellQuote(cwd)} && ${cmd}` : cmd, undefined, undefined, timeoutMs);
   }
 
-  async execStreaming(id: string, cmd: string, cwd: string | undefined, onLine: ExecLineHandler): Promise<ExecResult> {
-    return this.ssh(id, cwd ? `cd ${shellQuote(cwd)} && ${cmd}` : cmd, undefined, onLine);
+  async execStreaming(id: string, cmd: string, cwd: string | undefined, onLine: ExecLineHandler, timeoutMs?: number): Promise<ExecResult> {
+    return this.ssh(id, cwd ? `cd ${shellQuote(cwd)} && ${cmd}` : cmd, undefined, onLine, timeoutMs);
   }
 
   async readFile(id: string, path: string): Promise<string | null> {
@@ -351,7 +353,13 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
     if (add.code !== 0) throw new Error(`Could not configure ${description}: ${add.stderr}`);
   }
 
-  private ssh(id: string, command: string, knownVm?: BootedVm, onLine?: ExecLineHandler): Promise<CommandResult> {
+  private ssh(
+    id: string,
+    command: string,
+    knownVm?: BootedVm,
+    onLine?: ExecLineHandler,
+    timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+  ): Promise<CommandResult> {
     const vm = knownVm ?? this.requireVm(id);
     return runCommand(
       "ssh",
@@ -369,7 +377,7 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
         `root@${vm.guestIp}`,
         command,
       ],
-      30_000,
+      timeoutMs,
       onLine,
     );
   }
@@ -396,6 +404,14 @@ function send(res: ServerResponse, status: number, body?: unknown): void {
     return;
   }
   res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(body));
+}
+
+function timeoutFromBody(body: Record<string, unknown>): number | undefined {
+  const value = body.timeoutMs;
+  if (value === undefined) return undefined;
+  const timeoutMs = Number(value);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return undefined;
+  return Math.min(Math.floor(timeoutMs), MAX_COMMAND_TIMEOUT_MS);
 }
 
 export function createHostManagerServer(driver: FirecrackerDriver, token?: string): Server {
@@ -427,7 +443,7 @@ export function createHostManagerServer(driver: FirecrackerDriver, token?: strin
       }
       if (req.method === "POST" && action === "/exec") {
         const body = await jsonBody(req);
-        send(res, 200, await driver.exec(id, String(body.cmd ?? ""), body.cwd ? String(body.cwd) : undefined));
+        send(res, 200, await driver.exec(id, String(body.cmd ?? ""), body.cwd ? String(body.cwd) : undefined, timeoutFromBody(body)));
         return;
       }
       if (req.method === "POST" && action === "/exec-stream") {
@@ -441,6 +457,7 @@ export function createHostManagerServer(driver: FirecrackerDriver, token?: strin
             (stream, line) => {
               res.write(`${JSON.stringify({ stream, line })}\n`);
             },
+            timeoutFromBody(body),
           );
           res.end(`${JSON.stringify({ result })}\n`);
         } catch (err) {

@@ -16,6 +16,11 @@ export interface ExecResult {
   code: number;
 }
 
+export interface ExecOptions {
+  /** Wall-clock command timeout. Implementations choose a sane default. */
+  timeoutMs?: number;
+}
+
 /** Result of a single HTTP GET issued from within the sandbox network. */
 export interface HttpResult {
   status: number;
@@ -38,7 +43,7 @@ export interface HttpRequest {
  */
 export interface SandboxHandle {
   /** Run a shell command, optionally from `cwd` (relative to sandbox root). */
-  exec(cmd: string, cwd?: string): Promise<ExecResult>;
+  exec(cmd: string, cwd?: string, options?: ExecOptions): Promise<ExecResult>;
   /** Return file contents, or `null` if the file does not exist. */
   readFile(path: string): Promise<string | null>;
   /** Issue an HTTP request to a URL reachable from inside the sandbox. */

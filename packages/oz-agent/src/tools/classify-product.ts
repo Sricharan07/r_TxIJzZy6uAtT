@@ -48,26 +48,58 @@ function envNameFromProduct(productName: string): string {
   return `${prefix || "PRODUCT"}_API_KEY`;
 }
 
-function envRequirements(text: string): ProductEnvRequirement[] {
-  const names = new Set<string>();
+function envNameFromLabel(productName: string, label: string): string {
+  const product = productName
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .split("_")
+    .slice(0, 2)
+    .join("_")
+    .toUpperCase() || "PRODUCT";
+  const suffix = label
+    .replace(/^x[-_]/i, "")
+    .replace(/authorization/i, "api_key")
+    .replace(/bearer/i, "api_key")
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+  return `${product}_${suffix || "API_KEY"}`;
+}
+
+function envRequirements(text: string, productName: string): ProductEnvRequirement[] {
+  const names = new Map<string, string>();
   for (const match of text.matchAll(/\b[A-Z][A-Z0-9_]{3,}\b/g)) {
     const name = match[0];
     if (/^(HTTP|JSON|REST|SDK|API|URL|GET|POST|PUT|PATCH|DELETE|CLI|HTML|CSS)$/.test(name)) continue;
-    if (/(KEY|TOKEN|SECRET|API|AUTH|PROJECT|REGION|ORG|WORKSPACE)/.test(name)) names.add(name);
+    if (/(KEY|TOKEN|SECRET|API|AUTH|PROJECT|REGION|ORG|WORKSPACE)/.test(name)) names.set(name, "Detected uppercase environment variable from documentation.");
   }
-  return [...names].slice(0, 8).map((name) => ({
+  for (const match of text.matchAll(/\b([a-z][a-z0-9-]*(?:key|token|secret|credential)[a-z0-9-]*|x-[a-z0-9-]*(?:key|token|secret)[a-z0-9-]*)\b/gi)) {
+    const label = match[1];
+    if (!label || /^(monkey|keyboard|tokenization)$/i.test(label)) continue;
+    names.set(envNameFromLabel(productName, label), `Detected credential-like field "${label}" from documentation.`);
+  }
+  for (const match of text.matchAll(/\b(authorization|bearer)\b/gi)) {
+    names.set(envNameFromLabel(productName, match[1] ?? "api_key"), "Detected authorization header from documentation.");
+  }
+  for (const match of text.matchAll(/[<[{(](?:your[-_\s]*)?([a-z0-9_-]*(?:api|project|workspace|org)?[-_\s]*(?:key|token|secret))[>\]})]/gi)) {
+    const label = match[1];
+    if (label) names.set(envNameFromLabel(productName, label), `Detected credential placeholder "${label}" from documentation.`);
+  }
+  return [...names.entries()].slice(0, 8).map(([name, description]) => ({
     name,
     scopes: ["agent", "assertion", "cleanup"],
     required: true,
-    description: `Detected from product documentation as a likely integration environment variable.`,
+    description,
   }));
 }
 
-function authProfile(text: string, pages: OzCrawledPage[]) {
-  const env = envRequirements(text);
+function authProfile(text: string, pages: OzCrawledPage[], productName: string) {
+  const env = envRequirements(text, productName);
   const bearer = /bearer/i.test(text);
-  const apiKey = /api[_ -]?key/i.test(text);
-  const header = /authorization/i.test(text) ? "Authorization" : /x-api-key/i.test(text) ? "x-api-key" : undefined;
+  const apiKey = /api[_ -]?key|project[_ -]?key|secret[_ -]?key|x-[a-z0-9-]*(?:key|token|secret)/i.test(text);
+  const header = /authorization/i.test(text)
+    ? "Authorization"
+    : /\b(x-[a-z0-9-]*(?:key|token|secret)[a-z0-9-]*)\b/i.exec(text)?.[1] ?? undefined;
   if (!bearer && !apiKey && env.length === 0) return undefined;
   const page = pages.find((item) => /auth|api.key|authorization|bearer/i.test(item.text)) ?? pages[0];
   return {
@@ -148,8 +180,8 @@ export const classifyProductTool: OzTool<ClassifyProductInput, { profile: OzProd
       .map((item) => item.type);
     const fallbackName = hostName(input.productUrl);
     const productName = titleName(input.homepage ?? input.pages[0], fallbackName);
-    const auth = authProfile(text, input.pages);
-    const detectedEnv = envRequirements(text);
+    const auth = authProfile(text, input.pages, productName);
+    const detectedEnv = envRequirements(text, productName);
     const requiredEnv = auth && detectedEnv.length === 0
       ? [{
           name: envNameFromProduct(productName),

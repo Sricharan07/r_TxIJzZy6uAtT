@@ -10,6 +10,7 @@ interface StreamingSandbox {
     cmd: string,
     cwd: string | undefined,
     onLine: (stream: ExecStream, line: string) => void | Promise<void>,
+    options?: { timeoutMs?: number },
   ): ReturnType<AgentTask["sandbox"]["exec"]>;
 }
 
@@ -21,6 +22,14 @@ export interface CliAgentSpec {
 }
 
 export class AgentCliUnavailableError extends Error {}
+export class AgentCliRunError extends Error {
+  constructor(
+    message: string,
+    readonly partial: { tokens: number; steps: number; timeout: boolean },
+  ) {
+    super(message);
+  }
+}
 
 export async function emitEvent(
   task: AgentTask,
@@ -31,31 +40,97 @@ export async function emitEvent(
   await task.onEvent?.(event);
 }
 
-function nestedText(value: unknown): string | null {
-  if (typeof value === "string" && value.trim()) return value.trim();
-  if (!value || typeof value !== "object") return null;
-  const object = value as Record<string, unknown>;
-  for (const key of ["text", "message", "command", "output", "summary", "content", "item", "event", "result", "data"]) {
-    const result = nestedText(object[key]);
-    if (result) return result;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const result = nestedText(item);
-      if (result) return result;
-    }
-  }
-  return null;
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function eventKind(value: unknown): AgentEvent["kind"] {
-  const text = JSON.stringify(value).toLowerCase();
-  if (text.includes("error") || text.includes("failed")) return "fail";
-  if (text.includes("command") || text.includes("shell") || text.includes("exec")) return "command";
-  if (text.includes("file") || text.includes("patch") || text.includes("edit")) return "file";
-  if (text.includes("tool") || text.includes("api")) return "api";
-  if (text.includes("warn")) return "warn";
-  return "info";
+function textValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function contentText(value: unknown): string | null {
+  if (typeof value === "string") return value.trim() || null;
+  if (!Array.isArray(value)) return null;
+  const parts = value.flatMap((item) => {
+    const itemRecord = record(item);
+    const text = textValue(itemRecord?.text) ?? textValue(itemRecord?.content);
+    return text ? [text] : [];
+  });
+  return parts.join("\n").trim() || null;
+}
+
+function toolInputText(input: unknown): string | null {
+  const inputRecord = record(input);
+  if (!inputRecord) return null;
+  return textValue(inputRecord.command)
+    ?? textValue(inputRecord.file_path)
+    ?? textValue(inputRecord.path)
+    ?? textValue(inputRecord.url)
+    ?? textValue(inputRecord.pattern);
+}
+
+function claudeToolUseEvent(content: Record<string, unknown>, elapsedSec: number): AgentEvent | null {
+  const name = textValue(content.name) ?? "tool";
+  const text = toolInputText(content.input) ?? name;
+  if (name === "Bash") return { t: elapsedSec, kind: "command", text };
+  if (["Edit", "Write", "MultiEdit", "Read", "LS", "Glob", "Grep"].includes(name)) {
+    return { t: elapsedSec, kind: name === "Read" || name === "LS" || name === "Glob" || name === "Grep" ? "info" : "file", text };
+  }
+  if (name === "WebFetch") return { t: elapsedSec, kind: "api", text };
+  return { t: elapsedSec, kind: "api", text: `${name}: ${text}` };
+}
+
+function resultEvent(text: string, isError: boolean, elapsedSec: number): AgentEvent | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (/^\(bash completed with no output\)$/i.test(trimmed)) {
+    return { t: elapsedSec, kind: "info", text: "Command completed with no output" };
+  }
+  const failedExit = /^exit code\s+([1-9]\d*)/i.test(trimmed);
+  return {
+    t: elapsedSec,
+    kind: isError || failedExit ? "fail" : "info",
+    text: trimmed.slice(0, 1_500),
+  };
+}
+
+function normalizedEvent(value: unknown, elapsedSec: number): AgentEvent | null {
+  const object = record(value);
+  if (!object) return null;
+  const type = textValue(object.type);
+  const subtype = textValue(object.subtype);
+  if (type === "system" && subtype === "thinking_tokens") return null;
+  if (type === "system" && subtype === "init") return { t: elapsedSec, kind: "info", text: "Agent session initialized" };
+  if (type === "turn.completed") return { t: elapsedSec, kind: "info", text: "Agent turn completed" };
+
+  const item = record(object.item);
+  if (item?.type === "command_execution") {
+    return { t: elapsedSec, kind: "command", text: textValue(item.command) ?? "command execution" };
+  }
+  if (item?.type === "file_change") {
+    return { t: elapsedSec, kind: "file", text: textValue(item.path) ?? "file changed" };
+  }
+
+  const message = record(object.message);
+  const content = message?.content;
+  if (Array.isArray(content)) {
+    for (const entry of content) {
+      const entryRecord = record(entry);
+      if (!entryRecord) continue;
+      if (entryRecord.type === "tool_use") return claudeToolUseEvent(entryRecord, elapsedSec);
+      if (entryRecord.type === "tool_result") {
+        return resultEvent(contentText(entryRecord.content) ?? "", entryRecord.is_error === true, elapsedSec);
+      }
+      if (entryRecord.type === "text") {
+        const text = textValue(entryRecord.text);
+        if (text) return { t: elapsedSec, kind: "info", text: text.slice(0, 1_500) };
+      }
+    }
+  }
+
+  const directText = contentText(content) ?? textValue(object.text) ?? textValue(object.message);
+  if (directText) return resultEvent(directText, object.is_error === true || subtype === "error", elapsedSec);
+  return null;
 }
 
 function usageTokens(value: unknown): number {
@@ -75,11 +150,8 @@ function normalizedEvents(stdout: string, elapsedSec: number): { events: AgentEv
     try {
       const parsed = JSON.parse(line) as unknown;
       tokens = Math.max(tokens, usageTokens(parsed));
-      events.push({
-        t: elapsedSec,
-        kind: eventKind(parsed),
-        text: nestedText(parsed) ?? line.slice(0, 500),
-      });
+      const event = normalizedEvent(parsed, elapsedSec);
+      if (event) events.push(event);
     } catch {
       events.push({ t: elapsedSec, kind: "info", text: line.slice(0, 500) });
     }
@@ -118,6 +190,7 @@ export async function runCliAgent(task: AgentTask, spec: CliAgentSpec): Promise<
   const startedAt = Date.now();
   const command = `${forwardedAgentEnvPrefix(task)}${configuredCommand(spec, task.prompt)}`;
   let normalized: ReturnType<typeof normalizedEvents> = { events: [], tokens: 0 };
+  const timeoutMs = Math.max(1, Math.ceil(task.config.metadata.timeoutSec * 1_000));
   const sandbox = task.sandbox;
   const streaming = canStream(sandbox);
   const result = streaming
@@ -126,8 +199,8 @@ export async function runCliAgent(task: AgentTask, spec: CliAgentSpec): Promise<
         const next = normalizedEvents(line, Math.max(1, Math.round((Date.now() - startedAt) / 1000)));
         normalized.tokens = Math.max(normalized.tokens, next.tokens);
         for (const event of next.events) await emitEvent(task, events, event);
-      })
-    : await sandbox.exec(command);
+      }, { timeoutMs })
+    : await sandbox.exec(command, undefined, { timeoutMs });
   const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
   if (!streaming) {
     normalized = normalizedEvents(result.stdout, elapsedSec);
@@ -141,7 +214,11 @@ export async function runCliAgent(task: AgentTask, spec: CliAgentSpec): Promise<
     });
   }
   if (result.code !== 0) {
-    throw new Error(`${spec.displayName} CLI exited with code ${result.code}.`);
+    throw new AgentCliRunError(`${spec.displayName} CLI exited with code ${result.code}.`, {
+      tokens: normalized.tokens,
+      steps: events.filter((event) => event.kind === "command" || event.kind === "file" || event.kind === "api").length,
+      timeout: /command timed out|timed out|timeout/i.test(result.stderr),
+    });
   }
   await emitEvent(task, events, {
     t: elapsedSec,

@@ -1,6 +1,10 @@
 import type { Finding, OzEvidence, RunResult, Severity } from "@kiln/shared";
 
 type FailureCode =
+  | "platform_timeout"
+  | "agent_cli_failure"
+  | "sandbox_failure"
+  | "missing_required_env"
   | "docs_missing"
   | "docs_ambiguous"
   | "sdk_mismatch"
@@ -16,6 +20,11 @@ function classify(run: RunResult): FailureCode {
     ...run.events.map((event) => `${event.text} ${event.annotation ?? ""}`),
     ...run.verdicts.map((verdict) => `${verdict.name} ${verdict.output ?? ""} ${verdict.hint ?? ""}`),
   ].join("\n").toLowerCase();
+  if (run.errorType === "timeout" || /command timed out|run exceeded .* timeout/.test(text)) return "platform_timeout";
+  if (/missing required product environment variables/.test(text)) return "missing_required_env";
+  if (/cli exited with code|agent cli|claude code cli|codex cli|cursor cli/.test(text)) return "agent_cli_failure";
+  if (run.errorType === "platform" && /sandbox|firecracker|guest|ssh|manager unavailable|teardown/.test(text)) return "sandbox_failure";
+  if (run.errorType === "platform" && run.verdicts.length === 0) return "agent_cli_failure";
   if (/missing.*env|credential|api key|unauthorized|forbidden|401|403/.test(text)) return "auth_confusion";
   if (/cannot find module|package|install|glibc|native binding/.test(text)) return "environment_issue";
   if (/not a function|does not export|undefined method|sdk/.test(text)) return "sdk_mismatch";

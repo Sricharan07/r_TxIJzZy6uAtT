@@ -80,6 +80,7 @@ function toOzEvent(row: OzEventRow): OzEvent {
     kind: row.kind as OzEventKind,
     phase: row.phase as OzJobStatus,
     message: row.message,
+    dedupeKey: row.dedupe_key ?? undefined,
     payload: row.payload ? (row.payload as Record<string, unknown>) : undefined,
     createdAt: row.created_at,
   };
@@ -334,25 +335,58 @@ export class PostgresKilnStore implements KilnStore {
 
   async appendOzEvent(event: OzEvent): Promise<OzEvent> {
     const result = await this.query<OzEventRow>(
-      `INSERT INTO oz_events (job_id, kind, phase, message, payload)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO oz_events (job_id, kind, phase, message, dedupe_key, payload)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (job_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
        RETURNING *`,
       [
         event.jobId,
         event.kind,
         event.phase,
         event.message,
+        event.dedupeKey ?? null,
         event.payload ? JSON.stringify(event.payload) : null,
       ],
     );
-    await this.query("UPDATE oz_jobs SET updated_at = now() WHERE id = $1", [event.jobId]);
-    return toOzEvent(result.rows[0]!);
+    if (result.rows[0]) {
+      await this.query("UPDATE oz_jobs SET updated_at = now() WHERE id = $1", [event.jobId]);
+      return toOzEvent(result.rows[0]!);
+    }
+    if (event.dedupeKey) {
+      const existing = await this.query<OzEventRow>(
+        "SELECT * FROM oz_events WHERE job_id = $1 AND dedupe_key = $2",
+        [event.jobId, event.dedupeKey],
+      );
+      if (existing.rows[0]) return toOzEvent(existing.rows[0]!);
+    }
+    throw new Error("Could not append Oz event.");
   }
 
-  async listOzEvents(jobId: string): Promise<OzEvent[]> {
+  async listOzEvents(jobId: string, options: { afterId?: string; limit?: number } = {}): Promise<OzEvent[]> {
+    const limit = Math.min(Math.max(Math.floor(options.limit ?? 250), 1), 1_000);
+    if (options.afterId) {
+      const result = await this.query<OzEventRow>(
+        `WITH cursor AS (
+           SELECT created_at, id::text AS id FROM oz_events WHERE job_id = $1 AND id::text = $2
+         )
+         SELECT * FROM oz_events
+         WHERE job_id = $1
+           AND (
+             created_at > COALESCE((SELECT created_at FROM cursor), '-infinity'::timestamptz)
+             OR (
+               created_at = (SELECT created_at FROM cursor)
+               AND id::text > COALESCE((SELECT id FROM cursor), '')
+             )
+           )
+         ORDER BY created_at ASC, id ASC
+         LIMIT $3`,
+        [jobId, options.afterId, limit],
+      );
+      return result.rows.map(toOzEvent);
+    }
     const result = await this.query<OzEventRow>(
-      "SELECT * FROM oz_events WHERE job_id = $1 ORDER BY created_at ASC",
-      [jobId],
+      "SELECT * FROM oz_events WHERE job_id = $1 ORDER BY created_at ASC, id ASC LIMIT $2",
+      [jobId, limit],
     );
     return result.rows.map(toOzEvent);
   }

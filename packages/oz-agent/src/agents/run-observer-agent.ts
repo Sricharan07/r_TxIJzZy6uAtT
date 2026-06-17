@@ -1,6 +1,10 @@
 import type { AgentEvent, OzEvent } from "@kiln/shared";
 
-export function observeRunEvent(jobId: string, phase: OzEvent["phase"], event: AgentEvent): OzEvent {
+function clip(text: string): string {
+  return text.length > 500 ? text.slice(0, 497) + "..." : text;
+}
+
+export function observeRunEvent(jobId: string, phase: OzEvent["phase"], event: AgentEvent, dedupeKey?: string): OzEvent {
   const severity = event.kind === "fail" ? "critical" : event.kind === "warn" ? "warning" : "info";
   const prefix =
     event.kind === "command"
@@ -16,7 +20,13 @@ export function observeRunEvent(jobId: string, phase: OzEvent["phase"], event: A
     jobId,
     kind: "run.observation",
     phase,
-    message: `${prefix}: ${event.text}`,
-    payload: { severity, sourceEvent: event },
+    message: `${prefix}: ${clip(event.text)}`,
+    dedupeKey,
+    payload: {
+      severity,
+      eventKind: event.kind,
+      t: event.t,
+      annotation: event.annotation ? clip(event.annotation) : undefined,
+    },
   };
 }

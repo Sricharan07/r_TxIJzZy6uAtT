@@ -42,6 +42,46 @@ describe("JsonKilnStore", () => {
     }
   });
 
+  it("deduplicates Oz events and supports cursor reads", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kiln-store-events-test-"));
+    try {
+      const store = new JsonKilnStore(join(dir, "data.json"));
+      const user = await store.getOrCreateDevUser();
+      const job = await store.createOzJob(user.id, "https://example.test", "copilot", {
+        jobId: "oz-job-1",
+        userId: user.id,
+        input: { productUrl: "https://example.test", mode: "copilot" },
+        discovery: { docsCandidates: [], selectedDocs: [], githubRepos: [], packages: [], codeExamples: [] },
+      });
+      const first = await store.appendOzEvent({
+        jobId: job.id,
+        kind: "run.observation",
+        phase: "running",
+        message: "Agent progress",
+        dedupeKey: "run-1:0",
+      });
+      const duplicate = await store.appendOzEvent({
+        jobId: job.id,
+        kind: "run.observation",
+        phase: "running",
+        message: "Agent progress",
+        dedupeKey: "run-1:0",
+      });
+      await store.appendOzEvent({
+        jobId: job.id,
+        kind: "report.created",
+        phase: "complete",
+        message: "Done",
+      });
+
+      expect(duplicate.id).toBe(first.id);
+      expect(await store.listOzEvents(job.id)).toHaveLength(2);
+      expect(await store.listOzEvents(job.id, { afterId: first.id })).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("selects Postgres only when DATABASE_URL is configured", () => {
     const databaseUrl = process.env.DATABASE_URL;
     try {

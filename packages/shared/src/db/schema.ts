@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS oz_events (
   kind        TEXT NOT NULL,
   phase       TEXT NOT NULL,
   message     TEXT NOT NULL,
+  dedupe_key  TEXT,
   payload     JSONB,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -108,6 +109,7 @@ CREATE TABLE IF NOT EXISTS oz_feedback_events (
 ALTER TABLE verdicts ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 ALTER TABLE verdicts ADD COLUMN IF NOT EXISTS evidence JSONB;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS grade_report JSONB;
+ALTER TABLE oz_events ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_evals_user ON evals(user_id);
 CREATE INDEX IF NOT EXISTS idx_runs_eval ON runs(eval_id);
@@ -117,6 +119,7 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at
 CREATE INDEX IF NOT EXISTS idx_oz_jobs_user ON oz_jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_oz_jobs_updated ON oz_jobs(updated_at);
 CREATE INDEX IF NOT EXISTS idx_oz_events_job ON oz_events(job_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_oz_events_dedupe ON oz_events(job_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_oz_artifacts_job ON oz_artifacts(job_id);
 	`;
 
@@ -188,6 +191,7 @@ export interface OzEventRow {
   kind: string;
   phase: string;
   message: string;
+  dedupe_key: string | null;
   payload: unknown | null;
   created_at: string;
 }

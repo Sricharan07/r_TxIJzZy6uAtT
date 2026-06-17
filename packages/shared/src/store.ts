@@ -66,7 +66,7 @@ export interface KilnStore {
   listOzJobs(userId: string): Promise<OzJob[]>;
   saveOzJob(job: OzJob): Promise<void>;
   appendOzEvent(event: OzEvent): Promise<OzEvent>;
-  listOzEvents(jobId: string): Promise<OzEvent[]>;
+  listOzEvents(jobId: string, options?: { afterId?: string; limit?: number }): Promise<OzEvent[]>;
   createOzArtifact(jobId: string, type: string, name: string, data?: unknown, blobUrl?: string): Promise<OzArtifact>;
   listOzArtifacts(jobId: string): Promise<OzArtifact[]>;
   appendOzFeedback(jobId: string, eventType: string, before?: unknown, after?: unknown): Promise<void>;
@@ -319,6 +319,10 @@ export class JsonKilnStore implements KilnStore {
 
   async appendOzEvent(event: OzEvent): Promise<OzEvent> {
     const current = await this.load();
+    if (event.dedupeKey) {
+      const existing = current.ozEvents.find((item) => item.jobId === event.jobId && item.dedupeKey === event.dedupeKey);
+      if (existing) return existing;
+    }
     const saved: OzEvent = {
       ...event,
       id: event.id ?? newId("ozevt"),
@@ -331,11 +335,16 @@ export class JsonKilnStore implements KilnStore {
     return saved;
   }
 
-  async listOzEvents(jobId: string): Promise<OzEvent[]> {
+  async listOzEvents(jobId: string, options: { afterId?: string; limit?: number } = {}): Promise<OzEvent[]> {
     const current = await this.load();
+    const after = options.afterId ? current.ozEvents.find((event) => event.id === options.afterId && event.jobId === jobId) : undefined;
+    const limit = Math.min(Math.max(Math.floor(options.limit ?? 250), 1), 1_000);
+    const afterKey = after ? `${after.createdAt ?? ""}:${after.id ?? ""}` : "";
     return current.ozEvents
       .filter((event) => event.jobId === jobId)
-      .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
+      .filter((event) => !after || `${event.createdAt ?? ""}:${event.id ?? ""}`.localeCompare(afterKey) > 0)
+      .sort((a, b) => `${a.createdAt ?? ""}:${a.id ?? ""}`.localeCompare(`${b.createdAt ?? ""}:${b.id ?? ""}`))
+      .slice(0, limit);
   }
 
   async createOzArtifact(jobId: string, type: string, name: string, data?: unknown, blobUrl?: string): Promise<OzArtifact> {

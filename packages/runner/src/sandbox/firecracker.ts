@@ -11,16 +11,17 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import type { SandboxHandle, ExecResult, HttpRequest, HttpResult } from "@kiln/grader";
+import type { SandboxHandle, ExecOptions, ExecResult, HttpRequest, HttpResult } from "@kiln/grader";
 
 const exec = promisify(execCb);
 type SandboxState = "created" | "booted" | "torn-down";
+const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 
 export interface RunnerSandbox extends SandboxHandle {
   readonly id: string;
   boot(): Promise<void>;
   writeFile(path: string, contents: string): Promise<void>;
-  execStreaming(cmd: string, cwd: string | undefined, onLine: ExecLineHandler): Promise<ExecResult>;
+  execStreaming(cmd: string, cwd: string | undefined, onLine: ExecLineHandler, options?: ExecOptions): Promise<ExecResult>;
   teardown(): Promise<void>;
 }
 
@@ -31,7 +32,7 @@ function runStreamingCommand(
   cmd: string,
   cwd: string,
   onLine: ExecLineHandler,
-  timeoutMs = 30_000,
+  timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
 ): Promise<ExecResult> {
   return new Promise((resolveResult) => {
     const child = spawn(cmd, { cwd, shell: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -68,7 +69,7 @@ function runStreamingCommand(
         () =>
           resolveResult({
             stdout,
-            stderr: stderr || error?.message || (timedOut ? "Command timed out." : ""),
+            stderr: [stderr, error?.message, timedOut ? "Command timed out." : ""].filter(Boolean).join("\n"),
             code,
           }),
         (callbackError: unknown) =>
@@ -110,12 +111,12 @@ export class LocalSandbox implements RunnerSandbox {
     await writeFile(fullPath, contents);
   }
 
-  async exec(cmd: string, cwd?: string): Promise<ExecResult> {
+  async exec(cmd: string, cwd?: string, options: ExecOptions = {}): Promise<ExecResult> {
     this.assertBooted();
     try {
       const result = await exec(cmd, {
         cwd: cwd ? this.resolveGuestPath(cwd) : this.requireRootDir(),
-        timeout: 30_000,
+        timeout: options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
       });
       return { stdout: result.stdout, stderr: result.stderr, code: 0 };
     } catch (err) {
@@ -128,9 +129,9 @@ export class LocalSandbox implements RunnerSandbox {
     }
   }
 
-  async execStreaming(cmd: string, cwd: string | undefined, onLine: ExecLineHandler): Promise<ExecResult> {
+  async execStreaming(cmd: string, cwd: string | undefined, onLine: ExecLineHandler, options: ExecOptions = {}): Promise<ExecResult> {
     this.assertBooted();
-    return runStreamingCommand(cmd, cwd ? this.resolveGuestPath(cwd) : this.requireRootDir(), onLine);
+    return runStreamingCommand(cmd, cwd ? this.resolveGuestPath(cwd) : this.requireRootDir(), onLine, options.timeoutMs);
   }
 
   async readFile(path: string): Promise<string | null> {
@@ -230,21 +231,21 @@ export class FirecrackerSandbox implements RunnerSandbox {
     });
   }
 
-  async exec(cmd: string, cwd?: string): Promise<ExecResult> {
+  async exec(cmd: string, cwd?: string, options: ExecOptions = {}): Promise<ExecResult> {
     return this.request<ExecResult>(this.path("/exec"), {
       method: "POST",
-      body: JSON.stringify({ cmd, cwd }),
+      body: JSON.stringify({ cmd, cwd, timeoutMs: options.timeoutMs }),
     });
   }
 
-  async execStreaming(cmd: string, cwd: string | undefined, onLine: ExecLineHandler): Promise<ExecResult> {
+  async execStreaming(cmd: string, cwd: string | undefined, onLine: ExecLineHandler, options: ExecOptions = {}): Promise<ExecResult> {
     const headers = new Headers({ "Content-Type": "application/json" });
     if (this.token) headers.set("Authorization", `Bearer ${this.token}`);
     const path = this.path("/exec-stream");
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ cmd, cwd }),
+      body: JSON.stringify({ cmd, cwd, timeoutMs: options.timeoutMs }),
     });
     if (!response.ok) {
       throw new Error(`Firecracker manager POST ${path} failed: ${response.status} ${await response.text()}`);

@@ -14,8 +14,8 @@ class FakeDriver implements FirecrackerDriver {
   async writeFile(id: string, path: string): Promise<void> {
     this.calls.push(`write:${id}:${path}`);
   }
-  async exec(id: string, cmd: string): Promise<{ stdout: string; stderr: string; code: number }> {
-    this.calls.push(`exec:${id}:${cmd}`);
+  async exec(id: string, cmd: string, _cwd?: string, timeoutMs?: number): Promise<{ stdout: string; stderr: string; code: number }> {
+    this.calls.push(`exec:${id}:${cmd}:${timeoutMs ?? "default"}`);
     return { stdout: "ok", stderr: "", code: 0 };
   }
   async execStreaming(
@@ -23,8 +23,9 @@ class FakeDriver implements FirecrackerDriver {
     cmd: string,
     _cwd: string | undefined,
     onLine: (stream: "stdout" | "stderr", line: string) => void | Promise<void>,
+    timeoutMs?: number,
   ): Promise<{ stdout: string; stderr: string; code: number }> {
-    this.calls.push(`stream:${id}:${cmd}`);
+    this.calls.push(`stream:${id}:${cmd}:${timeoutMs ?? "default"}`);
     await onLine("stdout", "first");
     return { stdout: "first\n", stderr: "", code: 0 };
   }
@@ -61,11 +62,11 @@ describe("Firecracker host manager API", () => {
 
     await sandbox.boot();
     await sandbox.writeFile("README.md", "hello");
-    expect(await sandbox.exec("npm test")).toMatchObject({ code: 0 });
+    expect(await sandbox.exec("npm test", undefined, { timeoutMs: 45_000 })).toMatchObject({ code: 0 });
     const lines: string[] = [];
     expect(await sandbox.execStreaming("npm test", undefined, (_stream, line) => {
       lines.push(line);
-    })).toMatchObject({
+    }, { timeoutMs: 90_000 })).toMatchObject({
       code: 0,
     });
     expect(lines).toEqual(["first"]);
@@ -77,8 +78,8 @@ describe("Firecracker host manager API", () => {
     expect(driver.calls).toEqual([
       "boot:run-1",
       "write:run-1:README.md",
-      "exec:run-1:npm test",
-      "stream:run-1:npm test",
+      "exec:run-1:npm test:45000",
+      "stream:run-1:npm test:90000",
       "read:run-1:README.md",
       "http:run-1:GET:https://api.example/health",
       "http:run-1:POST:https://api.example/webhook",

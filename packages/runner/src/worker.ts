@@ -26,6 +26,7 @@ import {
 import { gradeWithReport } from "@kiln/grader";
 import { getStore } from "@kiln/shared/store";
 import { getAgent } from "./agents/registry.js";
+import { AgentCliRunError } from "./agents/cli.js";
 import { createSandbox } from "./sandbox/firecracker.js";
 import type { RunnerSandbox } from "./sandbox/firecracker.js";
 import type { Agent } from "./agents/interface.js";
@@ -57,6 +58,13 @@ function runCountForEval(config: EvalConfig): number {
   const requested = config.metadata.requestedRuns;
   if (requested !== undefined) return Math.min(10, Math.max(1, Math.floor(requested)));
   return process.env.NODE_ENV === "production" ? 3 : 1;
+}
+
+function queueLockDurationMs(): number {
+  const configured = Number(process.env.KILN_RUNNER_LOCK_DURATION_MS);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  const maxRunSec = Number(process.env.KILN_RUNNER_MAX_TIMEOUT_SEC ?? 3_600);
+  return Math.ceil((Number.isFinite(maxRunSec) && maxRunSec > 0 ? maxRunSec : 3_600) * 1_000 + 120_000);
 }
 
 async function refreshEvalGradeReports(evalRecord: Eval): Promise<void> {
@@ -115,6 +123,16 @@ function deriveTitle(config: EvalConfig): string {
 }
 
 class RunTimeoutError extends Error {}
+
+function stepCount(events: AgentEvent[]): number {
+  return events.filter((event) => event.kind === "command" || event.kind === "file" || event.kind === "api").length;
+}
+
+function isTimeoutFailure(err: unknown): boolean {
+  return err instanceof RunTimeoutError
+    || (err instanceof AgentCliRunError && err.partial.timeout)
+    || (err instanceof Error && /command timed out|run exceeded .* timeout|timed out/i.test(err.message));
+}
 
 function clipOutput(text: string): string {
   return text.length > 1_500 ? text.slice(0, 1_500) + "\n...[truncated]" : text;
@@ -297,9 +315,9 @@ function sandboxWithProductEnv(
     id: sandbox.id,
     boot: () => sandbox.boot(),
     writeFile: (path, contents) => sandbox.writeFile(path, contents),
-    exec: (cmd, cwd) => sandbox.exec(withScopedEnv(config, scope, cmd), cwd),
-    execStreaming: (cmd, cwd, onLine) =>
-      sandbox.execStreaming(withScopedEnv(config, scope, cmd), cwd, onLine),
+    exec: (cmd, cwd, options) => sandbox.exec(withScopedEnv(config, scope, cmd), cwd, options),
+    execStreaming: (cmd, cwd, onLine, options) =>
+      sandbox.execStreaming(withScopedEnv(config, scope, cmd), cwd, onLine, options),
     readFile: (path) => sandbox.readFile(path),
     httpGet: (url) => sandbox.httpGet(url),
     httpRequest: (request) => sandbox.httpRequest(request),
@@ -443,7 +461,12 @@ export async function executeRun(
   } catch (err) {
     // Decision 18: classify our own failures as platform errors.
     status = "errored";
-    errorType = err instanceof RunTimeoutError ? "timeout" : "platform";
+    if (err instanceof AgentCliRunError) {
+      tokens = Math.max(tokens, err.partial.tokens);
+      totalSteps = Math.max(totalSteps, err.partial.steps);
+    }
+    totalSteps = Math.max(totalSteps, stepCount(events));
+    errorType = isTimeoutFailure(err) ? "timeout" : "platform";
     await emitRunEvent(events, options.onEvent, {
       t: 0,
       kind: "fail",
@@ -562,7 +585,7 @@ export async function startWorker(): Promise<void> {
       connection: redisConnection(),
       concurrency: Number(process.env.KILN_RUNNER_CONCURRENCY ?? 1),
       maxStalledCount: Number(process.env.KILN_RUNNER_MAX_STALLED_COUNT ?? 1),
-      lockDuration: Number(process.env.KILN_RUNNER_LOCK_DURATION_MS ?? 30_000),
+      lockDuration: queueLockDurationMs(),
     },
   );
   await worker.waitUntilReady();

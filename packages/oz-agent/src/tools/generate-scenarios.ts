@@ -46,23 +46,37 @@ export const generateScenariosTool: OzTool<GenerateScenariosInput, { scenarios: 
     const profile = input.profile;
     const env = profile.requiredEnv;
     const product = profile.productName;
+    const hasSdk = profile.sdks.length > 0;
+    const hasApi = profile.APIs.length > 0 || profile.productType.includes("api") || profile.auth !== undefined;
     const scenarios: OzScenario[] = [
       scenario(
         "first_successful_call",
         "First successful call",
         "Every integration starts with installing the SDK or calling the API successfully.",
-        `Build a minimal Node integration for ${product}. Install the official SDK if one is documented, initialize the client, make the simplest safe successful call or local dry-run, and write the observed result to src/oz-result.json.`,
+        hasSdk
+          ? `Build a minimal Node integration for ${product}. Use the documented SDK ${profile.sdks[0]?.packageName}, initialize the client with documented environment variables, make the simplest safe successful call or local dry-run, and write the observed result to src/oz-result.json.`
+          : `Build a minimal Node integration for ${product} using the documented HTTP API or curl examples. Do not search package registries unless the docs name an SDK. Initialize request headers from environment variables, make the simplest safe successful call or local dry-run, and write the observed result to src/oz-result.json.`,
         env,
         profile.evidence[0]?.quote ?? "Product docs were discovered.",
       ),
-      scenario(
+    ];
+    if (hasSdk) {
+      scenarios.push(scenario(
         "sdk_import_init",
         "SDK import and client initialization",
         "Agents often fail before business logic when install/import/auth docs are unclear.",
-        `Create src/index.ts that imports the documented ${product} SDK or client, initializes it with environment variables, and exports a small reusable client factory.`,
+        `Create src/index.ts that imports the documented ${product} SDK or client, initializes it with environment variables, and exports a small reusable client factory. Use only SDK packages found in the provided product profile.`,
         env,
-      ),
-    ];
+      ));
+    } else if (hasApi) {
+      scenarios.push(scenario(
+        "http_client_init",
+        "HTTP client initialization",
+        "REST-only products should be tested through documented endpoints and headers instead of invented SDKs.",
+        `Create src/index.ts that exports a small reusable ${product} HTTP client. Use the documented base URL, version headers, and auth headers from the provided docs. Do not import an SDK unless one is listed in the product profile.`,
+        env,
+      ));
+    }
     if (env.length > 0) {
       scenarios.push(
         scenario(

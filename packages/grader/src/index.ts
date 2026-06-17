@@ -3,7 +3,7 @@
  *
  * Grades a finished sandbox against a list of assertions and returns verdicts.
  */
-export type { SandboxHandle, ExecResult, HttpRequest, HttpResult } from "./sandbox.js";
+export type { SandboxHandle, ExecOptions, ExecResult, HttpRequest, HttpResult } from "./sandbox.js";
 export type { LlmJudge } from "./assertions/llm-judge.js";
 export { AnthropicJudge, createDefaultLlmJudge, UnconfiguredJudge, runLlmAssertion } from "./assertions/llm-judge.js";
 export { runShellAssertion } from "./assertions/shell.js";

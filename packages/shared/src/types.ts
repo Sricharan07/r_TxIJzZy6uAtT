@@ -634,7 +634,8 @@ export interface OzAgentState {
   run?: {
     evalId?: string;
     runIds: string[];
-    liveEvents: AgentEvent[];
+    liveEvents?: AgentEvent[];
+    observedEventCount?: number;
     result?: unknown;
   };
   report?: OzReport;
@@ -662,6 +663,7 @@ export interface OzEvent {
   kind: OzEventKind;
   phase: OzJobStatus;
   message: string;
+  dedupeKey?: string;
   payload?: Record<string, unknown>;
   createdAt?: string;
 }

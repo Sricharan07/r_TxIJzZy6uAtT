@@ -46,15 +46,30 @@ export function scenarioToEvalConfig({
         cleanupSteps: [...(productProfile.cleanupSteps ?? []), ...scenario.cleanupSteps],
       }
     : undefined;
+  const facts = state.productProfile
+    ? [
+        `Product: ${state.productProfile.productName}`,
+        `Types: ${state.productProfile.productType.join(", ") || "unknown"}`,
+        `Auth scheme: ${state.productProfile.auth?.scheme ?? "unknown"}`,
+        `Auth header: ${state.productProfile.auth?.headerName ?? "not documented"}`,
+        `Required env: ${mergeEnvRequirements(state.productProfile.requiredEnv, scenario.requiredEnv).map((env) => env.name).join(", ") || "none detected"}`,
+        `Documented SDKs: ${state.productProfile.sdks.map((sdk) => `${sdk.manager}:${sdk.packageName}`).join(", ") || "none"}`,
+        `Documented APIs: ${state.productProfile.APIs.map((api) => [api.method, api.path || api.name].filter(Boolean).join(" ")).join("; ") || "none mapped"}`,
+        "Instruction: Use only documented SDKs listed above. If none are listed, use the documented HTTP API/curl examples and do not search package registries.",
+      ].join("\n")
+    : "";
   return {
     task: scenario.task,
     language: language as Language,
     productProfile: mergedProfile,
-    context: state.discovery.codeExamples.slice(0, 6).map((example) => ({
-      type: "paste",
-      label: `Example from ${example.sourceUrl}`,
-      content: example.code,
-    })),
+    context: [
+      ...(facts ? [{ type: "paste" as const, label: "Oz product integration facts", content: facts }] : []),
+      ...state.discovery.codeExamples.slice(0, 6).map((example) => ({
+        type: "paste" as const,
+        label: `Example from ${example.sourceUrl}`,
+        content: example.code,
+      })),
+    ],
     assertions: scenario.assertions,
     dynamicProbes: scenario.dynamicProbes,
     metadata: {

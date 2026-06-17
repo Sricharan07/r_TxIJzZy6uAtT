@@ -91,6 +91,44 @@ describe("CLI adapters", () => {
     expect(result.events.some((event) => event.kind === "command")).toBe(true);
   });
 
+  it("does not classify successful Claude tool results as failures", async () => {
+    class ClaudeResultSandbox extends CliSandbox {
+      override async execStreaming(
+        cmd: string,
+        _cwd: string | undefined,
+        onLine: (stream: "stdout" | "stderr", line: string) => void | Promise<void>,
+      ): Promise<ExecResult> {
+        this.commands.push(cmd);
+        await onLine("stdout", JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "tool_use", name: "Bash", input: { command: "npm test" } }] },
+        }));
+        await onLine("stdout", JSON.stringify({
+          type: "user",
+          message: { content: [{ type: "tool_result", is_error: false, content: "(Bash completed with no output)" }] },
+        }));
+        await onLine("stdout", JSON.stringify({ type: "system", subtype: "thinking_tokens", estimated_tokens: 10 }));
+        return { stdout: "", stderr: "", code: 0 };
+      }
+    }
+    const previousUseCli = process.env.KILN_AGENT_USE_CLI;
+    process.env.KILN_AGENT_USE_CLI = "1";
+    try {
+      const result = await new ClaudeCodeAgent().startTask({
+        config,
+        sandbox: new ClaudeResultSandbox(),
+        prompt: "Build it",
+      });
+
+      expect(result.events.some((event) => event.kind === "fail")).toBe(false);
+      expect(result.events.map((event) => event.text)).toContain("Command completed with no output");
+      expect(result.events.some((event) => event.text.includes("thinking_tokens"))).toBe(false);
+    } finally {
+      if (previousUseCli === undefined) delete process.env.KILN_AGENT_USE_CLI;
+      else process.env.KILN_AGENT_USE_CLI = previousUseCli;
+    }
+  });
+
   it("passes the configured Bedrock Claude model to Claude Code", async () => {
     const previousUseCli = process.env.KILN_AGENT_USE_CLI;
     const previousModel = process.env.ANTHROPIC_MODEL;
