@@ -115,6 +115,36 @@ describe("CLI adapters", () => {
     }
   });
 
+  it("forwards product-scoped agent env to CLI adapters", async () => {
+    const previous = process.env.KILN_AGENT_PRODUCT_TOKEN;
+    process.env.KILN_AGENT_PRODUCT_TOKEN = "agent-env-test";
+    try {
+      const sandbox = new CliSandbox();
+      await new CodexAgent().startTask({
+        config: {
+          ...config,
+          productProfile: {
+            companyName: "TestCo",
+            productName: "Agent Product",
+            productType: "sdk",
+            runtime: { language: "node", image: "default" },
+            docsSources: [],
+            requiredEnv: [
+              { name: "KILN_AGENT_PRODUCT_TOKEN", scopes: ["agent"], required: true },
+            ],
+          },
+        },
+        sandbox,
+        prompt: "Build it",
+      });
+
+      expect(sandbox.commands[1]).toContain("KILN_AGENT_PRODUCT_TOKEN='agent-env-test'");
+    } finally {
+      if (previous === undefined) delete process.env.KILN_AGENT_PRODUCT_TOKEN;
+      else process.env.KILN_AGENT_PRODUCT_TOKEN = previous;
+    }
+  });
+
   it("registers the Cursor adapter", () => {
     expect(getAgent("cursor").type).toBe("cursor");
   });

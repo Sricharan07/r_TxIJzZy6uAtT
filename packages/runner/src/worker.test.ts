@@ -96,4 +96,80 @@ describe("executeRun", () => {
     expect(result.errorType).toBe("platform");
     expect(result.events.at(-1)?.annotation).toContain("sandbox manager unavailable");
   });
+
+  it("runs product setup, preflight, assertion env, and cleanup steps", async () => {
+    const previous = process.env.KILN_PRODUCT_TOKEN;
+    process.env.KILN_PRODUCT_TOKEN = "runner-test-token";
+    try {
+      const result = await executeRun(
+        {
+          ...config,
+          productProfile: {
+            companyName: "TestCo",
+            productName: "Test SDK",
+            productType: "sdk",
+            runtime: { language: "node", image: "default" },
+            docsSources: [{ type: "paste", label: "Product docs", content: "Use the official SDK." }],
+            requiredEnv: [
+              { name: "KILN_PRODUCT_TOKEN", scopes: ["setup", "assertion", "cleanup"], required: true },
+            ],
+            setupSteps: [
+              {
+                name: "Write setup marker",
+                command: "node -e \"require('node:fs').writeFileSync('setup-token.txt', process.env.KILN_PRODUCT_TOKEN)\"",
+              },
+            ],
+            preflightChecks: [{ name: "Setup marker exists", command: "test -f setup-token.txt" }],
+            cleanupSteps: [{ name: "Cleanup marker", command: "echo cleaned > cleanup.txt" }],
+          },
+          assertions: [
+            ...config.assertions,
+            {
+              type: "shell",
+              name: "Assertion has scoped product env",
+              config: { command: "test \"$KILN_PRODUCT_TOKEN\" = \"runner-test-token\"" },
+            },
+          ],
+        },
+        {
+          sandbox: new LocalSandbox("product-steps-test"),
+          agent: successfulAgent,
+        },
+      );
+
+      expect(result.status).toBe("completed");
+      expect(result.verdicts.filter((verdict) => verdict.type !== "llm").every((verdict) => verdict.passed)).toBe(true);
+      expect(result.events.map((event) => event.text)).toEqual(
+        expect.arrayContaining([
+          "Product setup: Write setup marker",
+          "Product preflight: Setup marker exists",
+          "Product cleanup: Cleanup marker",
+        ]),
+      );
+    } finally {
+      if (previous === undefined) delete process.env.KILN_PRODUCT_TOKEN;
+      else process.env.KILN_PRODUCT_TOKEN = previous;
+    }
+  });
+
+  it("fails fast when a required product environment variable is missing", async () => {
+    const result = await executeRun(
+      {
+        ...config,
+        productProfile: {
+          companyName: "TestCo",
+          productName: "Missing Env Product",
+          productType: "api",
+          runtime: { language: "node", image: "default" },
+          docsSources: [],
+          requiredEnv: [{ name: "KILN_MISSING_PRODUCT_TOKEN", scopes: ["agent"], required: true }],
+        },
+      },
+      { sandbox: new LocalSandbox("missing-product-env-test"), agent: successfulAgent },
+    );
+
+    expect(result.status).toBe("errored");
+    expect(result.errorType).toBe("platform");
+    expect(result.events.at(-1)?.annotation).toContain("KILN_MISSING_PRODUCT_TOKEN");
+  });
 });

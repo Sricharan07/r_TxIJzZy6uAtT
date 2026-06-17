@@ -17,6 +17,9 @@ import {
   type Eval,
   type EvalConfig,
   type GradeReport,
+  type ProductCommandStep,
+  type ProductEnvScope,
+  type ProductPackage,
   type RunResult,
   type Verdict,
 } from "@kiln/shared";
@@ -28,6 +31,11 @@ import type { RunnerSandbox } from "./sandbox/firecracker.js";
 import type { Agent } from "./agents/interface.js";
 import { crawlUrl } from "./context/crawler.js";
 import { cloneRepo } from "./context/github.js";
+import {
+  missingRequiredProductEnv,
+  redactProductEnvValues,
+  withScopedEnv,
+} from "./product-env.js";
 
 export interface ExecuteRunOptions {
   runId?: string;
@@ -108,6 +116,120 @@ function deriveTitle(config: EvalConfig): string {
 
 class RunTimeoutError extends Error {}
 
+function clipOutput(text: string): string {
+  return text.length > 1_500 ? text.slice(0, 1_500) + "\n...[truncated]" : text;
+}
+
+function allContextSources(config: EvalConfig): EvalConfig["context"] {
+  return [...(config.productProfile?.docsSources ?? []), ...config.context];
+}
+
+function stepScope(phase: "setup" | "preflight" | "cleanup"): ProductEnvScope {
+  return phase === "preflight" ? "setup" : phase;
+}
+
+function stepError(config: EvalConfig, phase: string, step: ProductCommandStep, code: number, stdout: string, stderr: string): Error {
+  const output = [stdout.trim(), stderr.trim() ? `[stderr]\n${stderr.trim()}` : ""].filter(Boolean).join("\n");
+  const redacted = redactProductEnvValues(config, clipOutput(output));
+  return new Error(`Product ${phase} step "${step.name}" failed with code ${code}.${redacted ? `\n${redacted}` : ""}`);
+}
+
+function runtimePreflightSteps(config: EvalConfig): ProductCommandStep[] {
+  const runtime = config.productProfile?.runtime;
+  if (!runtime?.image || runtime.image === "default") return [];
+  const steps: ProductCommandStep[] = [];
+  if (runtime.language === "node") {
+    steps.push({
+      name: "Node runtime is available",
+      command: "node --version && npm --version",
+    });
+  }
+  if (runtime.image === "ubuntu-24.04-node22") {
+    steps.push({
+      name: "glibc satisfies Ubuntu 24.04-compatible products",
+      command:
+        "node -e \"const {execSync}=require('node:child_process');" +
+        "const out=execSync('getconf GNU_LIBC_VERSION').toString();" +
+        "const [,v]=out.trim().split(/\\s+/);const [maj,min]=v.split('.').map(Number);" +
+        "process.exit(maj>2||(maj===2&&min>=38)?0:1)\"",
+    });
+  }
+  if (runtime.image === "ubuntu-22.04-node22") {
+    steps.push({
+      name: "glibc satisfies Ubuntu 22.04-compatible products",
+      command:
+        "node -e \"const {execSync}=require('node:child_process');" +
+        "const out=execSync('getconf GNU_LIBC_VERSION').toString();" +
+        "const [,v]=out.trim().split(/\\s+/);const [maj,min]=v.split('.').map(Number);" +
+        "process.exit(maj>2||(maj===2&&min>=35)?0:1)\"",
+    });
+  }
+  return steps;
+}
+
+function packageSpecifier(pkg: ProductPackage): string {
+  if (pkg.manager === "go") return pkg.version ? `${pkg.name}@${pkg.version}` : pkg.name;
+  if (pkg.manager !== "npm" && pkg.manager !== "pip") return pkg.name;
+  if (!pkg.version || pkg.version === "latest") return pkg.name;
+  return pkg.manager === "npm" ? `${pkg.name}@${pkg.version}` : `${pkg.name}==${pkg.version}`;
+}
+
+function packageSetupSteps(config: EvalConfig): ProductCommandStep[] {
+  const packages = config.productProfile?.packages ?? [];
+  const explicit = packages.filter((pkg) => pkg.installCommand);
+  const npmPackages = packages.filter((pkg) => pkg.manager === "npm" && !pkg.installCommand);
+  const pipPackages = packages.filter((pkg) => pkg.manager === "pip" && !pkg.installCommand);
+  const goPackages = packages.filter((pkg) => pkg.manager === "go" && !pkg.installCommand);
+  return [
+    ...explicit.map((pkg): ProductCommandStep => ({
+      name: `Install ${pkg.name}`,
+      command: pkg.installCommand!,
+    })),
+    ...(npmPackages.length
+      ? [
+          {
+            name: "Install npm packages",
+            command: `npm init -y >/dev/null && npm install ${npmPackages.map(packageSpecifier).join(" ")}`,
+          },
+        ]
+      : []),
+    ...(pipPackages.length
+      ? [
+          {
+            name: "Install Python packages",
+            command: `python3 -m pip install ${pipPackages.map(packageSpecifier).join(" ")}`,
+          },
+        ]
+      : []),
+    ...(goPackages.length
+      ? [
+          {
+            name: "Install Go packages",
+            command: `go mod init kiln-product-eval 2>/dev/null || true; go get ${goPackages.map(packageSpecifier).join(" ")}`,
+          },
+        ]
+      : []),
+  ];
+}
+
+function packagePreflightSteps(config: EvalConfig): ProductCommandStep[] {
+  return (config.productProfile?.packages ?? [])
+    .filter((pkg) => pkg.importCheck)
+    .map((pkg): ProductCommandStep => ({
+      name: `Import check: ${pkg.name}`,
+      command: pkg.importCheck!,
+    }));
+}
+
+async function emitRunEvent(
+  events: AgentEvent[],
+  onEvent: ExecuteRunOptions["onEvent"] | undefined,
+  event: AgentEvent,
+): Promise<void> {
+  events.push(event);
+  await onEvent?.(event);
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutSec: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -134,7 +256,16 @@ async function withTimeout<T>(promise: Promise<T>, timeoutSec: number): Promise<
  */
 async function assemblePrompt(config: EvalConfig): Promise<string> {
   const blocks: string[] = [];
-  for (const src of config.context) {
+  if (config.productProfile) {
+    blocks.push(
+      [
+        `### Product — ${config.productProfile.companyName} ${config.productProfile.productName}`,
+        `Type: ${config.productProfile.productType}`,
+        `Runtime: ${config.productProfile.runtime.language}${config.productProfile.runtime.image ? ` / ${config.productProfile.runtime.image}` : ""}`,
+      ].join("\n"),
+    );
+  }
+  for (const src of allContextSources(config)) {
     switch (src.type) {
       case "url": {
         const { label, content } = await crawlUrl(src.label, src.crawlDepth ?? "single");
@@ -155,6 +286,54 @@ async function assemblePrompt(config: EvalConfig): Promise<string> {
   }
   const contextBlock = blocks.length ? blocks.join("\n\n") + "\n\n" : "";
   return `${contextBlock}### Task\n${config.task}`;
+}
+
+function sandboxWithProductEnv(
+  sandbox: RunnerSandbox,
+  config: EvalConfig,
+  scope: ProductEnvScope,
+): RunnerSandbox {
+  return {
+    id: sandbox.id,
+    boot: () => sandbox.boot(),
+    writeFile: (path, contents) => sandbox.writeFile(path, contents),
+    exec: (cmd, cwd) => sandbox.exec(withScopedEnv(config, scope, cmd), cwd),
+    execStreaming: (cmd, cwd, onLine) =>
+      sandbox.execStreaming(withScopedEnv(config, scope, cmd), cwd, onLine),
+    readFile: (path) => sandbox.readFile(path),
+    httpGet: (url) => sandbox.httpGet(url),
+    httpRequest: (request) => sandbox.httpRequest(request),
+    teardown: () => sandbox.teardown(),
+  };
+}
+
+async function runProductSteps({
+  config,
+  sandbox,
+  phase,
+  steps,
+  events,
+  onEvent,
+}: {
+  config: EvalConfig;
+  sandbox: RunnerSandbox;
+  phase: "setup" | "preflight" | "cleanup";
+  steps: ProductCommandStep[];
+  events: AgentEvent[];
+  onEvent?: ExecuteRunOptions["onEvent"];
+}): Promise<void> {
+  const scope = stepScope(phase);
+  for (const step of steps) {
+    await emitRunEvent(events, onEvent, {
+      t: 0,
+      kind: "command",
+      text: `Product ${phase}: ${step.name}`,
+    });
+    const result = await sandbox.exec(withScopedEnv(config, scope, step.command), step.cwd);
+    if (result.code !== 0) {
+      throw stepError(config, phase, step, result.code, result.stdout, result.stderr);
+    }
+  }
 }
 
 /**
@@ -179,16 +358,47 @@ export async function executeRun(
 
   const sandbox = options.sandbox ?? createSandbox(id);
   let events: AgentEvent[] = [];
-  let streamedEventCount = 0;
+  let agentStreamedEventCount = 0;
   let verdicts: Verdict[] = [];
   let gradeReport: GradeReport | undefined;
   let tokens = 0;
   let totalSteps = 0;
   let errorType: RunResult["errorType"] = null;
   let status: RunResult["status"] = "running";
+  let booted = false;
 
   try {
+    const missingEnv = missingRequiredProductEnv(config);
+    if (missingEnv.length) {
+      throw new Error(`Missing required product environment variables: ${missingEnv.join(", ")}.`);
+    }
+
     await sandbox.boot();
+    booted = true;
+    await runProductSteps({
+      config,
+      sandbox,
+      phase: "preflight",
+      steps: runtimePreflightSteps(config),
+      events,
+      onEvent: options.onEvent,
+    });
+    await runProductSteps({
+      config,
+      sandbox,
+      phase: "setup",
+      steps: [...packageSetupSteps(config), ...(config.productProfile?.setupSteps ?? [])],
+      events,
+      onEvent: options.onEvent,
+    });
+    await runProductSteps({
+      config,
+      sandbox,
+      phase: "preflight",
+      steps: [...packagePreflightSteps(config), ...(config.productProfile?.preflightChecks ?? [])],
+      events,
+      onEvent: options.onEvent,
+    });
 
     const prompt = await assemblePrompt(config);
     const agent = options.agent ?? getAgent(config.metadata.agentType);
@@ -199,7 +409,7 @@ export async function executeRun(
         sandbox,
         prompt,
         async onEvent(event) {
-          streamedEventCount += 1;
+          agentStreamedEventCount += 1;
           events.push(event);
           await options.onEvent?.(event);
         },
@@ -208,10 +418,9 @@ export async function executeRun(
     );
     await run.collectArtifacts();
 
-    events = run.events;
-    if (options.onEvent && streamedEventCount === 0) {
-      for (const event of events) {
-        await options.onEvent(event);
+    if (agentStreamedEventCount === 0) {
+      for (const event of run.events) {
+        await emitRunEvent(events, options.onEvent, event);
       }
     }
     tokens = run.tokens;
@@ -219,7 +428,7 @@ export async function executeRun(
 
     // Grade the finished sandbox (Decision 5). The grader inspects the same
     // SandboxHandle the agent mutated and returns one verdict per assertion.
-    const grading = await gradeWithReport(config, sandbox, {
+    const grading = await gradeWithReport(config, sandboxWithProductEnv(sandbox, config, "assertion"), {
       runId: id,
       events,
       runStats: {
@@ -235,23 +444,44 @@ export async function executeRun(
     // Decision 18: classify our own failures as platform errors.
     status = "errored";
     errorType = err instanceof RunTimeoutError ? "timeout" : "platform";
-    events = [
-      ...events,
-      {
-        t: 0,
-        kind: "fail",
-        text: "Run failed before completion",
-        annotation: err instanceof Error ? err.message : String(err),
-      },
-    ];
+    await emitRunEvent(events, options.onEvent, {
+      t: 0,
+      kind: "fail",
+      text: "Run failed before completion",
+      annotation: err instanceof Error ? err.message : String(err),
+    });
   } finally {
     try {
-      await sandbox.teardown();
+      if (booted) {
+        await runProductSteps({
+          config,
+          sandbox,
+          phase: "cleanup",
+          steps: config.productProfile?.cleanupSteps ?? [],
+          events,
+          onEvent: options.onEvent,
+        });
+      }
     } catch (err) {
       if (status !== "errored") {
         status = "errored";
         errorType = "platform";
-        events.push({
+      }
+      await emitRunEvent(events, options.onEvent, {
+        t: 0,
+        kind: "fail",
+        text: "Product cleanup failed",
+        annotation: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    try {
+      if (booted) await sandbox.teardown();
+    } catch (err) {
+      if (status !== "errored") {
+        status = "errored";
+        errorType = "platform";
+        await emitRunEvent(events, options.onEvent, {
           t: 0,
           kind: "fail",
           text: "Sandbox teardown failed",

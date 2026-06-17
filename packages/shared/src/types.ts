@@ -72,6 +72,77 @@ export interface ContextSource {
   content?: string;
 }
 
+/** Product category used to generate sensible setup and assertion defaults. */
+export type ProductType =
+  | "sdk"
+  | "api"
+  | "cli"
+  | "web-ui"
+  | "auth"
+  | "payments"
+  | "storage"
+  | "ai-sdk"
+  | "rag"
+  | "database"
+  | "other";
+
+/** Where a declared product secret may be exposed during an eval run. */
+export type ProductEnvScope = "setup" | "agent" | "assertion" | "cleanup";
+
+/** Runtime image requested by a product profile. */
+export type ProductRuntimeImage =
+  | "default"
+  | "ubuntu-22.04-node22"
+  | "ubuntu-24.04-node22"
+  | "python"
+  | "go";
+
+export interface ProductRuntimeRequirement {
+  language: Language;
+  image?: ProductRuntimeImage;
+  nodeVersion?: string;
+  pythonVersion?: string;
+  goVersion?: string;
+}
+
+export interface ProductEnvRequirement {
+  /** Environment variable name. Values are never stored in eval configs. */
+  name: string;
+  scopes: ProductEnvScope[];
+  required?: boolean;
+  description?: string;
+}
+
+export type ProductPackageManager = "npm" | "pip" | "go" | "shell";
+
+export interface ProductPackage {
+  manager: ProductPackageManager;
+  name: string;
+  version?: string;
+  installCommand?: string;
+  importCheck?: string;
+}
+
+export interface ProductCommandStep {
+  name: string;
+  command: string;
+  cwd?: string;
+}
+
+/** Reusable product/company setup embedded in an eval config. */
+export interface ProductProfile {
+  companyName: string;
+  productName: string;
+  productType: ProductType;
+  runtime: ProductRuntimeRequirement;
+  docsSources: ContextSource[];
+  packages?: ProductPackage[];
+  requiredEnv?: ProductEnvRequirement[];
+  setupSteps?: ProductCommandStep[];
+  preflightChecks?: ProductCommandStep[];
+  cleanupSteps?: ProductCommandStep[];
+}
+
 /** Assertion kinds (Decisions 5 & 16). Shell/http/file are deterministic; llm is AI-judged. */
 export type AssertionType = "shell" | "http" | "file" | "llm";
 
@@ -283,6 +354,8 @@ export interface GradeDefinitionCheck {
 export interface EvalConfig {
   task: string;
   language: Language;
+  /** Optional product profile for product-agnostic setup, env forwarding, and cleanup. */
+  productProfile?: ProductProfile;
   context: ContextSource[];
   assertions: Assertion[];
   /** Optional dynamic negative/runtime probes. */

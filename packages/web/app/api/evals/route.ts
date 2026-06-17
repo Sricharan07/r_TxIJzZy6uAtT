@@ -8,6 +8,11 @@ export const runtime = "nodejs";
 const LANGUAGES = new Set(["node", "python", "go", "other"]);
 const AGENTS = new Set(["claude-code", "codex", "cursor"]);
 const CONTEXT_TYPES = new Set(["url", "repo", "file", "paste"]);
+const PRODUCT_TYPES = new Set(["sdk", "api", "cli", "web-ui", "auth", "payments", "storage", "ai-sdk", "rag", "database", "other"]);
+const PRODUCT_ENV_SCOPES = new Set(["setup", "agent", "assertion", "cleanup"]);
+const PRODUCT_IMAGES = new Set(["default", "ubuntu-22.04-node22", "ubuntu-24.04-node22", "python", "go"]);
+const PACKAGE_MANAGERS = new Set(["npm", "pip", "go", "shell"]);
+const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -28,6 +33,53 @@ function validateContextSource(value: unknown): boolean {
   if (!isOptionalString(value.content)) return false;
   if (value.type === "url") return value.crawlDepth === undefined || value.crawlDepth === "single" || value.crawlDepth === "linked";
   if (value.type === "repo") return value.paths === undefined || (Array.isArray(value.paths) && value.paths.every((path) => typeof path === "string"));
+  return true;
+}
+
+function validateProductEnvRequirement(value: unknown): boolean {
+  if (!isRecord(value) || !isNonEmptyString(value.name) || !ENV_NAME.test(value.name)) return false;
+  if (!Array.isArray(value.scopes) || value.scopes.length === 0) return false;
+  if (!value.scopes.every((scope) => typeof scope === "string" && PRODUCT_ENV_SCOPES.has(scope))) return false;
+  if (value.required !== undefined && typeof value.required !== "boolean") return false;
+  return isOptionalString(value.description);
+}
+
+function validateProductPackage(value: unknown): boolean {
+  if (!isRecord(value) || !isNonEmptyString(value.manager) || !PACKAGE_MANAGERS.has(value.manager)) return false;
+  if (!isNonEmptyString(value.name)) return false;
+  return isOptionalString(value.version) && isOptionalString(value.installCommand) && isOptionalString(value.importCheck);
+}
+
+function validateProductCommandStep(value: unknown): boolean {
+  return isRecord(value) && isNonEmptyString(value.name) && isNonEmptyString(value.command) && isOptionalString(value.cwd);
+}
+
+function validateProductProfile(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (!isNonEmptyString(value.companyName) || !isNonEmptyString(value.productName)) return false;
+  if (typeof value.productType !== "string" || !PRODUCT_TYPES.has(value.productType)) return false;
+  if (!isRecord(value.runtime)) return false;
+  if (typeof value.runtime.language !== "string" || !LANGUAGES.has(value.runtime.language)) return false;
+  if (value.runtime.image !== undefined && (typeof value.runtime.image !== "string" || !PRODUCT_IMAGES.has(value.runtime.image))) {
+    return false;
+  }
+  if (!isOptionalString(value.runtime.nodeVersion)) return false;
+  if (!isOptionalString(value.runtime.pythonVersion)) return false;
+  if (!isOptionalString(value.runtime.goVersion)) return false;
+  if (!Array.isArray(value.docsSources) || !value.docsSources.every(validateContextSource)) return false;
+  if (value.packages !== undefined && (!Array.isArray(value.packages) || !value.packages.every(validateProductPackage))) {
+    return false;
+  }
+  if (
+    value.requiredEnv !== undefined &&
+    (!Array.isArray(value.requiredEnv) || !value.requiredEnv.every(validateProductEnvRequirement))
+  ) {
+    return false;
+  }
+  for (const key of ["setupSteps", "preflightChecks", "cleanupSteps"] as const) {
+    const steps = value[key];
+    if (steps !== undefined && (!Array.isArray(steps) || !steps.every(validateProductCommandStep))) return false;
+  }
   return true;
 }
 
@@ -96,6 +148,7 @@ function validateEvalConfig(body: unknown): body is EvalConfig {
   const cfg = body as Partial<EvalConfig>;
   if (typeof cfg.task !== "string" || cfg.task.trim().length === 0) return false;
   if (typeof cfg.language !== "string" || !LANGUAGES.has(cfg.language)) return false;
+  if (cfg.productProfile !== undefined && !validateProductProfile(cfg.productProfile)) return false;
   if (!Array.isArray(cfg.context) || !cfg.context.every(validateContextSource)) return false;
   if (!Array.isArray(cfg.assertions) || cfg.assertions.length === 0 || !cfg.assertions.every(validateAssertion)) return false;
   if (cfg.dynamicProbes !== undefined && (!Array.isArray(cfg.dynamicProbes) || !cfg.dynamicProbes.every(validateDynamicProbe))) return false;
