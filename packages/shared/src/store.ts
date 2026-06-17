@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { Eval, EvalConfig, RunResult, User } from "./types.js";
+import type {
+  Eval,
+  EvalConfig,
+  OzAgentState,
+  OzArtifact,
+  OzEvent,
+  OzJob,
+  OzMode,
+  RunResult,
+  User,
+} from "./types.js";
 import { MOCK_EVAL, MOCK_RUN, MOCK_RUN_ERROR, MOCK_RUN_FIXED, MOCK_USER } from "./mock.js";
 import { PostgresKilnStore } from "./postgres-store.js";
 
@@ -10,6 +20,17 @@ interface StoreState {
   sessions: AuthSession[];
   evals: Eval[];
   runs: RunResult[];
+  ozJobs: OzJob[];
+  ozEvents: OzEvent[];
+  ozArtifacts: OzArtifact[];
+  ozFeedbackEvents: Array<{
+    id: string;
+    jobId: string;
+    eventType: string;
+    before?: unknown;
+    after?: unknown;
+    createdAt: string;
+  }>;
 }
 
 interface AuthSession {
@@ -40,6 +61,15 @@ export interface KilnStore {
   getRun(id: string): Promise<RunResult | null>;
   listRuns(evalId: string): Promise<RunResult[]>;
   saveRun(run: RunResult): Promise<void>;
+  createOzJob(userId: string, inputUrl: string, mode: OzMode, state: OzAgentState): Promise<OzJob>;
+  getOzJob(id: string): Promise<OzJob | null>;
+  listOzJobs(userId: string): Promise<OzJob[]>;
+  saveOzJob(job: OzJob): Promise<void>;
+  appendOzEvent(event: OzEvent): Promise<OzEvent>;
+  listOzEvents(jobId: string): Promise<OzEvent[]>;
+  createOzArtifact(jobId: string, type: string, name: string, data?: unknown, blobUrl?: string): Promise<OzArtifact>;
+  listOzArtifacts(jobId: string): Promise<OzArtifact[]>;
+  appendOzFeedback(jobId: string, eventType: string, before?: unknown, after?: unknown): Promise<void>;
 }
 
 function nowIso(): string {
@@ -61,6 +91,10 @@ function defaultState(): StoreState {
     sessions: [],
     evals: [MOCK_EVAL],
     runs: [MOCK_RUN, MOCK_RUN_FIXED, MOCK_RUN_ERROR],
+    ozJobs: [],
+    ozEvents: [],
+    ozArtifacts: [],
+    ozFeedbackEvents: [],
   };
 }
 
@@ -220,6 +254,10 @@ export class JsonKilnStore implements KilnStore {
         sessions: parsed.sessions ?? [],
         evals: parsed.evals ?? [MOCK_EVAL],
         runs: parsed.runs ?? [MOCK_RUN, MOCK_RUN_FIXED, MOCK_RUN_ERROR],
+        ozJobs: parsed.ozJobs ?? [],
+        ozEvents: parsed.ozEvents ?? [],
+        ozArtifacts: parsed.ozArtifacts ?? [],
+        ozFeedbackEvents: parsed.ozFeedbackEvents ?? [],
       };
     } catch {
       this.state = defaultState();
@@ -239,6 +277,101 @@ export class JsonKilnStore implements KilnStore {
   private liveSessions(sessions: AuthSession[]): AuthSession[] {
     const now = Date.now();
     return sessions.filter((session) => Date.parse(session.expiresAt) > now);
+  }
+
+  async createOzJob(userId: string, inputUrl: string, mode: OzMode, state: OzAgentState): Promise<OzJob> {
+    const current = await this.load();
+    const job: OzJob = {
+      id: state.jobId,
+      userId,
+      inputUrl,
+      mode,
+      status: "created",
+      state,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    current.ozJobs.push(job);
+    await this.persist(current);
+    return job;
+  }
+
+  async getOzJob(id: string): Promise<OzJob | null> {
+    const current = await this.load();
+    return current.ozJobs.find((job) => job.id === id) ?? null;
+  }
+
+  async listOzJobs(userId: string): Promise<OzJob[]> {
+    const current = await this.load();
+    return current.ozJobs
+      .filter((job) => job.userId === userId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async saveOzJob(job: OzJob): Promise<void> {
+    const current = await this.load();
+    const idx = current.ozJobs.findIndex((item) => item.id === job.id);
+    const next: OzJob = { ...job, updatedAt: nowIso() };
+    if (idx >= 0) current.ozJobs[idx] = next;
+    else current.ozJobs.push(next);
+    await this.persist(current);
+  }
+
+  async appendOzEvent(event: OzEvent): Promise<OzEvent> {
+    const current = await this.load();
+    const saved: OzEvent = {
+      ...event,
+      id: event.id ?? newId("ozevt"),
+      createdAt: event.createdAt ?? nowIso(),
+    };
+    current.ozEvents.push(saved);
+    const job = current.ozJobs.find((item) => item.id === event.jobId);
+    if (job) job.updatedAt = nowIso();
+    await this.persist(current);
+    return saved;
+  }
+
+  async listOzEvents(jobId: string): Promise<OzEvent[]> {
+    const current = await this.load();
+    return current.ozEvents
+      .filter((event) => event.jobId === jobId)
+      .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
+  }
+
+  async createOzArtifact(jobId: string, type: string, name: string, data?: unknown, blobUrl?: string): Promise<OzArtifact> {
+    const current = await this.load();
+    const artifact: OzArtifact = {
+      id: newId("ozart"),
+      jobId,
+      type,
+      name,
+      data,
+      blobUrl,
+      createdAt: nowIso(),
+    };
+    current.ozArtifacts.push(artifact);
+    await this.persist(current);
+    return artifact;
+  }
+
+  async listOzArtifacts(jobId: string): Promise<OzArtifact[]> {
+    const current = await this.load();
+    return current.ozArtifacts
+      .filter((artifact) => artifact.jobId === jobId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async appendOzFeedback(jobId: string, eventType: string, before?: unknown, after?: unknown): Promise<void> {
+    const current = await this.load();
+    current.ozFeedbackEvents.push({
+      id: newId("ozfb"),
+      jobId,
+      eventType,
+      before,
+      after,
+      createdAt: nowIso(),
+    });
+    await this.persist(current);
   }
 }
 

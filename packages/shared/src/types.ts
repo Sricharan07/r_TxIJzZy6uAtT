@@ -449,6 +449,244 @@ export interface RunResult {
   gradeReport?: GradeReport;
 }
 
+export type OzMode = "copilot" | "autopilot" | "manual";
+
+export type OzJobStatus =
+  | "created"
+  | "discovering"
+  | "profiling"
+  | "mapping_docs"
+  | "generating_suite"
+  | "critiquing_suite"
+  | "awaiting_approval"
+  | "running"
+  | "diagnosing"
+  | "reporting"
+  | "complete"
+  | "blocked"
+  | "failed";
+
+export interface OzEvidence {
+  source: string;
+  quote: string;
+  confidence: number;
+}
+
+export interface OzCrawledPage {
+  url: string;
+  title: string;
+  text: string;
+  links: string[];
+  fetchedAt: string;
+}
+
+export interface OzDocsCandidate {
+  url: string;
+  label: string;
+  reason: string;
+  confidence: number;
+}
+
+export interface OzGitHubRepoCandidate {
+  url: string;
+  reason: string;
+  confidence: number;
+}
+
+export interface OzPackageCandidate {
+  manager: ProductPackageManager;
+  name: string;
+  version?: string;
+  evidence: OzEvidence[];
+  confidence: number;
+}
+
+export interface OzCodeExample {
+  language: string;
+  code: string;
+  sourceUrl: string;
+}
+
+export interface OzAuthProfile {
+  scheme: "api_key" | "bearer" | "basic" | "oauth" | "unknown";
+  headerName?: string;
+  envVars: string[];
+  evidence: OzEvidence[];
+}
+
+export interface OzSdkProfile {
+  language: Language | "curl";
+  packageName: string;
+  manager: ProductPackageManager;
+  installCommand?: string;
+  importHint?: string;
+  evidence: OzEvidence[];
+}
+
+export interface OzApiSurface {
+  name: string;
+  method?: HttpMethod;
+  path?: string;
+  description: string;
+  evidence: OzEvidence[];
+}
+
+export interface OzWebhookSurface {
+  name: string;
+  signatureHeader?: string;
+  description: string;
+  evidence: OzEvidence[];
+}
+
+export interface OzRisk {
+  code: string;
+  severity: Severity;
+  message: string;
+  evidence?: OzEvidence[];
+}
+
+export interface OzProductProfile {
+  companyName: string;
+  productName: string;
+  productType: ProductType[];
+  summary: string;
+  auth?: OzAuthProfile;
+  sdks: OzSdkProfile[];
+  APIs: OzApiSurface[];
+  webhooks: OzWebhookSurface[];
+  requiredEnv: ProductEnvRequirement[];
+  confidence: number;
+  evidence: OzEvidence[];
+}
+
+export interface OzScenario {
+  id: string;
+  title: string;
+  rationale: string;
+  task: string;
+  assertions: Assertion[];
+  dynamicProbes: DynamicProbe[];
+  requiredEnv: ProductEnvRequirement[];
+  setupSteps: ProductCommandStep[];
+  cleanupSteps: ProductCommandStep[];
+  confidence: number;
+  sources: OzEvidence[];
+  risks: OzRisk[];
+}
+
+export interface OzSuiteDraft {
+  scenarios: OzScenario[];
+  globalSetup: ProductCommandStep[];
+  globalEnv: ProductEnvRequirement[];
+  assertions: Assertion[];
+  dynamicProbes: DynamicProbe[];
+  confidence: number;
+  risks: OzRisk[];
+}
+
+export interface OzVerification {
+  schemaValid: boolean;
+  runnable: boolean;
+  missingSecrets: string[];
+  weakAssertions: string[];
+  hallucinationRisks: string[];
+  destructiveRisks: string[];
+}
+
+export interface OzRecommendedFix {
+  title: string;
+  detail: string;
+  target: "docs" | "sdk" | "api" | "tests" | "environment";
+  evidence: OzEvidence[];
+}
+
+export interface OzReport {
+  summary: string;
+  findings: Finding[];
+  recommendedFixes: OzRecommendedFix[];
+}
+
+export interface OzAgentState {
+  jobId: string;
+  userId: string;
+  input: {
+    productUrl: string;
+    userGoal?: string;
+    preferredLanguage?: Language | "curl";
+    agentTargets?: AgentType[];
+    mode: OzMode;
+  };
+  discovery: {
+    homepage?: OzCrawledPage;
+    docsCandidates: OzDocsCandidate[];
+    selectedDocs: OzCrawledPage[];
+    githubRepos: OzGitHubRepoCandidate[];
+    packages: OzPackageCandidate[];
+    codeExamples: OzCodeExample[];
+  };
+  productProfile?: OzProductProfile;
+  suiteDraft?: OzSuiteDraft;
+  verification?: OzVerification;
+  approval?: {
+    status: "pending" | "approved" | "rejected" | "edited";
+    userEdits?: unknown;
+  };
+  run?: {
+    evalId?: string;
+    runIds: string[];
+    liveEvents: AgentEvent[];
+    result?: unknown;
+  };
+  report?: OzReport;
+}
+
+export type OzEventKind =
+  | "discovery.started"
+  | "docs.found"
+  | "package.found"
+  | "profile.updated"
+  | "scenario.generated"
+  | "suite.critiqued"
+  | "suite.ready"
+  | "approval.updated"
+  | "run.started"
+  | "run.observation"
+  | "finding.created"
+  | "report.created"
+  | "job.blocked"
+  | "job.failed";
+
+export interface OzEvent {
+  id?: string;
+  jobId: string;
+  kind: OzEventKind;
+  phase: OzJobStatus;
+  message: string;
+  payload?: Record<string, unknown>;
+  createdAt?: string;
+}
+
+export interface OzJob {
+  id: string;
+  userId: string;
+  inputUrl: string;
+  mode: OzMode;
+  status: OzJobStatus;
+  state: OzAgentState;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OzArtifact {
+  id: string;
+  jobId: string;
+  type: string;
+  name: string;
+  data?: unknown;
+  blobUrl?: string;
+  createdAt: string;
+}
+
 /** GitHub-authenticated user (Decision 8). */
 export interface User {
   id: string;

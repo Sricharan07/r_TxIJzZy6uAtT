@@ -2,20 +2,20 @@ import Link from "next/link";
 
 const STEPS = [
   {
-    title: "Define a task",
-    body: 'Describe a realistic integration task — "Build a checkout flow using our Payments SDK."',
+    title: "Give Oz your product URL",
+    body: "Oz discovers docs, SDKs, repos, auth pages, webhooks, examples, and changelogs.",
   },
   {
-    title: "Add your context",
-    body: "Link your docs, SDK repo, or upload example files. This is what the agent sees.",
+    title: "Review Product Intelligence",
+    body: "Oz classifies your product, maps docs to integration surfaces, and cites evidence for every claim.",
   },
   {
-    title: "Set pass/fail tests",
-    body: "Define assertions: HTTP checks, file existence, shell commands, or LLM-judged criteria.",
+    title: "Approve the generated suite",
+    body: "Oz creates scenarios, deterministic assertions, safety checks, and repairs weak tests before you run.",
   },
   {
-    title: "Get your report",
-    body: "We run the agent in an isolated sandbox, grade the output, and give you a shareable report URL showing exactly where the agent succeeded or failed.",
+    title: "Get a DX report",
+    body: "Oz watches the agent, diagnoses failures, and recommends docs, SDK, or environment fixes.",
   },
 ];
 
@@ -25,8 +25,8 @@ export default function OnboardingPage() {
     <div className="onboarding">
       <h1>Welcome to Kiln</h1>
       <p className="subtitle">
-        Test whether coding agents can successfully integrate your API. Run real
-        agents, grade the results, see exactly where they fail.
+        An agentic DX engineer that discovers your product, generates an
+        agent-readiness suite, runs real agents, and explains exactly what to fix.
       </p>
 
       <div className="onboarding-steps">
@@ -42,11 +42,18 @@ export default function OnboardingPage() {
       </div>
 
       <Link
-        href="/evals/new"
+        href="/oz"
         className="btn btn-primary"
         style={{ padding: "12px 32px", fontSize: "14px" }}
       >
-        Create Your First Eval →
+        Start Oz
+      </Link>
+      <Link
+        href="/evals/new"
+        className="btn btn-ghost"
+        style={{ padding: "12px 32px", fontSize: "14px", marginLeft: "8px" }}
+      >
+        Manual Builder
       </Link>
       <p style={{ fontSize: "12px", color: "var(--text-dim)", marginTop: "12px" }}>
         Free plan — 10 evals/month, no credit card required

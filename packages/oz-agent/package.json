@@ -1,0 +1,26 @@
+{
+  "name": "@kiln/oz-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./state": "./dist/state.js",
+    "./orchestrator": "./dist/orchestrator.js"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "test": "vitest run src --pool=threads"
+  },
+  "dependencies": {
+    "@kiln/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.8"
+  }
+}

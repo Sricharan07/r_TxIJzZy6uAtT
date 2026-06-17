@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@kiln/runner": "*",
+    "@kiln/oz-agent": "*",
     "@kiln/shared": "*",
     "bullmq": "^5.78.0",
     "next": "^16.2.9",

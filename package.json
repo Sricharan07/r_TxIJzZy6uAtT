@@ -7,10 +7,11 @@
     "packages/shared",
     "packages/grader",
     "packages/runner",
+    "packages/oz-agent",
     "packages/web"
   ],
   "scripts": {
-    "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/grader && npm run build --workspace=packages/runner && npm run build --workspace=packages/web",
+    "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/grader && npm run build --workspace=packages/runner && npm run build --workspace=packages/oz-agent && npm run build --workspace=packages/web",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspace=packages/web",
     "test": "npm run test --workspaces --if-present",

@@ -4,12 +4,30 @@ import {
   SCHEMA_SQL,
   type AuthSessionRow,
   type EvalRow,
+  type OzArtifactRow,
+  type OzEventRow,
+  type OzJobRow,
   type RunRow,
   type UserRow,
   type VerdictRow,
 } from "./db/schema.js";
 import { getBlobStore, type BlobStore } from "./s3.js";
-import type { Eval, EvalConfig, GradeReport, GraderEvidence, RunResult, User, Verdict } from "./types.js";
+import type {
+  Eval,
+  EvalConfig,
+  GradeReport,
+  GraderEvidence,
+  OzAgentState,
+  OzArtifact,
+  OzEvent,
+  OzEventKind,
+  OzJob,
+  OzJobStatus,
+  OzMode,
+  RunResult,
+  User,
+  Verdict,
+} from "./types.js";
 import type { EvalSummary, KilnStore } from "./store.js";
 import { MOCK_USER } from "./mock.js";
 
@@ -39,6 +57,43 @@ function toEval(row: EvalRow): Eval {
     config: row.config as EvalConfig,
     createdAt: row.created_at,
     shareToken: row.share_token,
+  };
+}
+
+function toOzJob(row: OzJobRow): OzJob {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    inputUrl: row.input_url,
+    mode: row.mode as OzMode,
+    status: row.status as OzJobStatus,
+    state: row.state as OzAgentState,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toOzEvent(row: OzEventRow): OzEvent {
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    kind: row.kind as OzEventKind,
+    phase: row.phase as OzJobStatus,
+    message: row.message,
+    payload: row.payload ? (row.payload as Record<string, unknown>) : undefined,
+    createdAt: row.created_at,
+  };
+}
+
+function toOzArtifact(row: OzArtifactRow): OzArtifact {
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    type: row.type,
+    name: row.name,
+    data: row.data ?? undefined,
+    blobUrl: row.blob_url ?? undefined,
+    createdAt: row.created_at,
   };
 }
 
@@ -243,6 +298,94 @@ export class PostgresKilnStore implements KilnStore {
     } finally {
       client.release();
     }
+  }
+
+  async createOzJob(userId: string, inputUrl: string, mode: OzMode, state: OzAgentState): Promise<OzJob> {
+    const result = await this.query<OzJobRow>(
+      `INSERT INTO oz_jobs (id, user_id, input_url, mode, status, state)
+       VALUES ($1, $2, $3, $4, 'created', $5)
+       RETURNING *`,
+      [state.jobId, userId, inputUrl, mode, JSON.stringify(state)],
+    );
+    return toOzJob(result.rows[0]!);
+  }
+
+  async getOzJob(id: string): Promise<OzJob | null> {
+    const result = await this.query<OzJobRow>("SELECT * FROM oz_jobs WHERE id::text = $1", [id]);
+    return result.rows[0] ? toOzJob(result.rows[0]) : null;
+  }
+
+  async listOzJobs(userId: string): Promise<OzJob[]> {
+    const result = await this.query<OzJobRow>(
+      "SELECT * FROM oz_jobs WHERE user_id = $1 ORDER BY updated_at DESC",
+      [userId],
+    );
+    return result.rows.map(toOzJob);
+  }
+
+  async saveOzJob(job: OzJob): Promise<void> {
+    await this.query(
+      `UPDATE oz_jobs
+       SET mode = $2, status = $3, state = $4, updated_at = now()
+       WHERE id = $1`,
+      [job.id, job.mode, job.status, JSON.stringify(job.state)],
+    );
+  }
+
+  async appendOzEvent(event: OzEvent): Promise<OzEvent> {
+    const result = await this.query<OzEventRow>(
+      `INSERT INTO oz_events (job_id, kind, phase, message, payload)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [
+        event.jobId,
+        event.kind,
+        event.phase,
+        event.message,
+        event.payload ? JSON.stringify(event.payload) : null,
+      ],
+    );
+    await this.query("UPDATE oz_jobs SET updated_at = now() WHERE id = $1", [event.jobId]);
+    return toOzEvent(result.rows[0]!);
+  }
+
+  async listOzEvents(jobId: string): Promise<OzEvent[]> {
+    const result = await this.query<OzEventRow>(
+      "SELECT * FROM oz_events WHERE job_id = $1 ORDER BY created_at ASC",
+      [jobId],
+    );
+    return result.rows.map(toOzEvent);
+  }
+
+  async createOzArtifact(jobId: string, type: string, name: string, data?: unknown, blobUrl?: string): Promise<OzArtifact> {
+    const result = await this.query<OzArtifactRow>(
+      `INSERT INTO oz_artifacts (job_id, type, name, data, blob_url)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [jobId, type, name, data === undefined ? null : JSON.stringify(data), blobUrl ?? null],
+    );
+    return toOzArtifact(result.rows[0]!);
+  }
+
+  async listOzArtifacts(jobId: string): Promise<OzArtifact[]> {
+    const result = await this.query<OzArtifactRow>(
+      "SELECT * FROM oz_artifacts WHERE job_id = $1 ORDER BY created_at ASC",
+      [jobId],
+    );
+    return result.rows.map(toOzArtifact);
+  }
+
+  async appendOzFeedback(jobId: string, eventType: string, before?: unknown, after?: unknown): Promise<void> {
+    await this.query(
+      `INSERT INTO oz_feedback_events (job_id, event_type, before, after)
+       VALUES ($1, $2, $3, $4)`,
+      [
+        jobId,
+        eventType,
+        before === undefined ? null : JSON.stringify(before),
+        after === undefined ? null : JSON.stringify(after),
+      ],
+    );
   }
 
   private async hydrateRun(row: RunWithConfigRow): Promise<RunResult> {

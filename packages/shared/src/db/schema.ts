@@ -65,6 +65,46 @@ CREATE TABLE IF NOT EXISTS verdicts (
   UNIQUE (run_id, assertion_index)
 );
 
+CREATE TABLE IF NOT EXISTS oz_jobs (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES users(id),
+  input_url   TEXT NOT NULL,
+  mode        TEXT NOT NULL DEFAULT 'copilot',
+  status      TEXT NOT NULL,
+  state       JSONB NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS oz_events (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id      UUID NOT NULL REFERENCES oz_jobs(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL,
+  phase       TEXT NOT NULL,
+  message     TEXT NOT NULL,
+  payload     JSONB,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS oz_artifacts (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id      UUID NOT NULL REFERENCES oz_jobs(id) ON DELETE CASCADE,
+  type        TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  data        JSONB,
+  blob_url    TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS oz_feedback_events (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id      UUID NOT NULL REFERENCES oz_jobs(id) ON DELETE CASCADE,
+  event_type  TEXT NOT NULL,
+  before      JSONB,
+  after       JSONB,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 ALTER TABLE verdicts ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 ALTER TABLE verdicts ADD COLUMN IF NOT EXISTS evidence JSONB;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS grade_report JSONB;
@@ -74,6 +114,10 @@ CREATE INDEX IF NOT EXISTS idx_runs_eval ON runs(eval_id);
 CREATE INDEX IF NOT EXISTS idx_verdicts_run ON verdicts(run_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_oz_jobs_user ON oz_jobs(user_id);
+CREATE INDEX IF NOT EXISTS idx_oz_jobs_updated ON oz_jobs(updated_at);
+CREATE INDEX IF NOT EXISTS idx_oz_events_job ON oz_events(job_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_oz_artifacts_job ON oz_artifacts(job_id);
 	`;
 
 export interface UserRow {
@@ -125,4 +169,35 @@ export interface VerdictRow {
   output: string | null;
   hint: string | null;
   evidence: unknown | null;
+}
+
+export interface OzJobRow {
+  id: string;
+  user_id: string;
+  input_url: string;
+  mode: string;
+  status: string;
+  state: unknown;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OzEventRow {
+  id: string;
+  job_id: string;
+  kind: string;
+  phase: string;
+  message: string;
+  payload: unknown | null;
+  created_at: string;
+}
+
+export interface OzArtifactRow {
+  id: string;
+  job_id: string;
+  type: string;
+  name: string;
+  data: unknown | null;
+  blob_url: string | null;
+  created_at: string;
 }
