@@ -143,17 +143,15 @@ function OzPageInner() {
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : "Could not load Oz job.";
-          if (message.includes("not found")) {
-            setJob(null);
-            setEvents([]);
-            setVisibleEvents([]);
-            setEventQueue([]);
-            setArtifacts([]);
-            setDraftSuite(null);
-            router.replace("/oz");
-          } else {
-            setError(message);
-          }
+          setJob(null);
+          setEvents([]);
+          setVisibleEvents([]);
+          setEventQueue([]);
+          setArtifacts([]);
+          setDraftSuite(null);
+          if (message.includes("GitHub sign-in")) setAuthRequired(true);
+          else if (!message.includes("not found")) setError(message);
+          router.replace("/oz");
         }
       }
     };
