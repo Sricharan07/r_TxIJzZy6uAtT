@@ -141,7 +141,20 @@ function OzPageInner() {
           source?.close();
         });
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Could not load Oz job.");
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : "Could not load Oz job.";
+          if (message.includes("not found")) {
+            setJob(null);
+            setEvents([]);
+            setVisibleEvents([]);
+            setEventQueue([]);
+            setArtifacts([]);
+            setDraftSuite(null);
+            router.replace("/oz");
+          } else {
+            setError(message);
+          }
+        }
       }
     };
     void start();
