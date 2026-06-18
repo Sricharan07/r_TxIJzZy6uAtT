@@ -146,6 +146,15 @@ function hasFailedVerdict(run: RunResult, pattern: RegExp): boolean {
   return run.verdicts.some((verdict) => !verdict.passed && pattern.test(verdict.name));
 }
 
+function leakedSecretSignal(run: RunResult): boolean {
+  if (hasFailedVerdict(run, /secret is not printed/i)) return true;
+  return run.events.some((event) =>
+    /\[redacted:[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|BEARER|AUTH|CREDENTIAL)[A-Z0-9_]*\]/i.test(
+      `${event.text}\n${event.annotation ?? ""}`,
+    ),
+  );
+}
+
 function runtimeSucceeded(run: RunResult, text: string): boolean {
   if (run.gradeReport?.taskPassed) return true;
   const projectCommandPassed = run.verdicts.some((verdict) => /project command succeeds/i.test(verdict.name) && verdict.passed);
@@ -224,7 +233,7 @@ function analyzeRun(state: OzAgentState, run: RunResult): DraftInsight[] {
     }));
   }
 
-  if (hasFailedVerdict(run, /secret is not printed/i) || /secret.*(?:printed|logged|exposed|leaked)|printed.*secret/i.test(lower)) {
+  if (leakedSecretSignal(run) || /secret.*(?:printed|logged|exposed|leaked)|printed.*secret/i.test(lower)) {
     items.push(insight({
       key: "agent_secret_exposure",
       category: "agent",
@@ -235,7 +244,7 @@ function analyzeRun(state: OzAgentState, run: RunResult): DraftInsight[] {
       confidence: 0.94,
       behavior: "The agent inspected or wrote secret environment values instead of checking only whether variables were set.",
       recommendation: "Keep no-secret-printing instructions in the task and examples; docs should show presence checks rather than echoing credential values.",
-      traceEvidence: traceEvidence(run, /secret is not printed|echo .*KEY|printenv|secret.*(?:printed|logged|exposed|leaked)/i, "Secret guard failed."),
+      traceEvidence: traceEvidence(run, /\[redacted:[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|BEARER|AUTH|CREDENTIAL)[A-Z0-9_]*\]|secret is not printed|secret.*(?:printed|logged|exposed|leaked)/i, "Secret guard failed."),
       state,
     }));
   }
@@ -385,7 +394,12 @@ function analyzeRun(state: OzAgentState, run: RunResult): DraftInsight[] {
     }));
   }
 
-  if (runtimeSucceeded(run, text) && /documented_surface_not_referenced|documented product surface/i.test(text)) {
+  const surfaceAssertionMismatch = hasFailedVerdict(run, /documented product surface/i)
+    || (run.gradeReport?.findings ?? []).some((finding) =>
+      finding.status === "confirmed"
+      && (finding.code === "documented_surface_not_referenced" || /documented product surface/i.test(finding.title))
+    );
+  if (runtimeSucceeded(run, text) && surfaceAssertionMismatch) {
     items.push(insight({
       key: "grader_surface_false_negative",
       category: "harness",
@@ -463,7 +477,7 @@ export function behaviorSummaryFor(runs: RunResult[]): OzBehaviorSummary {
     retrySignals: runs.reduce((sum, run) => sum + run.events.filter((event) => /\bretry|again|try another|rerun/i.test(event.text)).length, 0),
     apiErrorSignals: runs.reduce((sum, run) => sum + apiErrorSignals(run), 0),
     unsupportedSignals: runs.reduce((sum, run) => sum + unsupportedPackages(run, undefined).length, 0),
-    secretExposureSignals: runs.reduce((sum, run) => sum + (hasFailedVerdict(run, /secret is not printed/i) ? 1 : 0), 0),
+    secretExposureSignals: runs.reduce((sum, run) => sum + (leakedSecretSignal(run) ? 1 : 0), 0),
     platformSignals: runs.filter((run) => run.errorType !== null).length,
   };
 }
