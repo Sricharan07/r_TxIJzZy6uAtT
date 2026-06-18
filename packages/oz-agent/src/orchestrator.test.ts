@@ -4,6 +4,7 @@ import { JsonKilnStore } from "@kiln/shared/store";
 import { OzOrchestrator } from "./orchestrator";
 import { buildOzReport, observeRunEvent } from "./index";
 import { buildDocsMap } from "./agents/docs-mapper-agent";
+import { scenarioToEvalConfig } from "./eval-config";
 
 function response(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html" } });
@@ -188,6 +189,11 @@ describe("OzOrchestrator", () => {
     expect(sdk?.symbols).toEqual(expect.arrayContaining(["MossClient", "SessionIndex"]));
     expect(sdk?.methods).toEqual(expect.arrayContaining(["addDocs", "query"]));
     expect(ready.state.suiteDraft?.scenarios.some((scenario) => scenario.id === "sdk_import_init")).toBe(true);
+    const firstCall = ready.state.suiteDraft?.scenarios.find((scenario) => scenario.id === "first_successful_call");
+    expect(firstCall).toBeDefined();
+    const evalConfig = scenarioToEvalConfig({ state: ready.state, scenario: firstCall! });
+    expect(evalConfig.productProfile?.packages?.map((pkg) => `${pkg.manager}:${pkg.name}`)).toEqual(["npm:@moss-dev/moss"]);
+    expect(evalConfig.context[0]?.content).toContain("Primary SDK for this node scenario: @moss-dev/moss");
   });
 
   it("keeps Oz run observations compact", () => {

@@ -1,4 +1,4 @@
-import type { AgentType, EvalConfig, Language, OzAgentState, OzScenario, ProductEnvRequirement, ProductProfile } from "@kiln/shared";
+import type { AgentType, EvalConfig, Language, OzAgentState, OzScenario, ProductEnvRequirement, ProductPackage, ProductProfile } from "@kiln/shared";
 import { productProfileToEvalProfile } from "./tools/classify-product.js";
 
 export function ozProductToRunnerProfile(state: OzAgentState): ProductProfile | undefined {
@@ -24,6 +24,25 @@ function mergeEnvRequirements(...groups: Array<ProductEnvRequirement[] | undefin
   return [...byName.values()];
 }
 
+function managerForLanguage(language: Language): ProductPackage["manager"] | null {
+  if (language === "node") return "npm";
+  if (language === "python") return "pip";
+  if (language === "go") return "go";
+  return null;
+}
+
+function primarySdkPackage(state: OzAgentState, language: Language): string | undefined {
+  return state.productProfile?.sdks.find((sdk) => sdk.language === language)?.packageName;
+}
+
+function packagesForLanguage(packages: ProductPackage[] | undefined, language: Language, primarySdk?: string): ProductPackage[] {
+  const manager = managerForLanguage(language);
+  if (!manager) return [];
+  const compatible = (packages ?? []).filter((pkg) => pkg.manager === manager);
+  if (primarySdk) return compatible.filter((pkg) => pkg.name === primarySdk).slice(0, 1);
+  return compatible.slice(0, 1);
+}
+
 export function scenarioToEvalConfig({
   state,
   scenario,
@@ -37,10 +56,12 @@ export function scenarioToEvalConfig({
 }): EvalConfig {
   const productProfile = ozProductToRunnerProfile(state);
   const language = (state.input.preferredLanguage === "curl" ? "node" : state.input.preferredLanguage) ?? productProfile?.runtime.language ?? "node";
+  const primarySdk = primarySdkPackage(state, language as Language);
   const mergedProfile: ProductProfile | undefined = productProfile
     ? {
         ...productProfile,
         runtime: { ...productProfile.runtime, language: language as Language },
+        packages: packagesForLanguage(productProfile.packages, language as Language, primarySdk),
         requiredEnv: mergeEnvRequirements(productProfile.requiredEnv, scenario.requiredEnv),
         setupSteps: [...(productProfile.setupSteps ?? []), ...scenario.setupSteps],
         cleanupSteps: [...(productProfile.cleanupSteps ?? []), ...scenario.cleanupSteps],
@@ -53,6 +74,7 @@ export function scenarioToEvalConfig({
         `Auth scheme: ${state.productProfile.auth?.scheme ?? "unknown"}`,
         `Auth header: ${state.productProfile.auth?.headerName ?? "not documented"}`,
         `Required env: ${mergeEnvRequirements(state.productProfile.requiredEnv, scenario.requiredEnv).map((env) => env.name).join(", ") || "none detected"}`,
+        `Primary SDK for this ${language} scenario: ${primarySdk ?? "none"}`,
         `Documented SDKs: ${state.productProfile.sdks.map((sdk) => [
           `${sdk.manager}:${sdk.packageName}`,
           sdk.symbols?.length ? `symbols=${sdk.symbols.join("|")}` : "",
