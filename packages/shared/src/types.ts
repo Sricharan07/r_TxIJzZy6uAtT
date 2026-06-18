@@ -164,6 +164,8 @@ export interface Assertion {
   /** Human-readable name shown in the report verdicts. */
   name: string;
   config: ShellAssertion | HttpAssertion | FileAssertion | LlmAssertion;
+  /** Defaults to true for deterministic assertions and false for LLM assertions. */
+  required?: boolean;
   /** Optional grading metadata used when this assertion emits a finding. */
   severityOnFail?: Severity;
   frictionCode?: string;
@@ -547,6 +549,8 @@ export interface OzSdkProfile {
   manager: ProductPackageManager;
   installCommand?: string;
   importHint?: string;
+  symbols?: string[];
+  methods?: string[];
   evidence: OzEvidence[];
 }
 

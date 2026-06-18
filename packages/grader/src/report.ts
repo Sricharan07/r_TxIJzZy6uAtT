@@ -120,7 +120,7 @@ function toGraderSpec(assertion: Assertion, index: number): GraderSpec {
     id: assertion.id ?? `assertion-${index}`,
     kind: assertionKind(assertion.type),
     name: assertion.name,
-    required: assertion.type !== "llm",
+    required: assertion.required ?? assertion.type !== "llm",
     severityOnFail: assertion.severityOnFail ?? defaultSeverity(assertion.type),
     frictionCode: assertion.frictionCode ?? defaultFindingCode(assertion.type),
     replayCmdTemplate: replayCommand(assertion),
@@ -197,7 +197,7 @@ function findingFromFailedVerdict(
   assertion: Assertion,
 ): Finding {
   const severity = assertion.severityOnFail ?? defaultSeverity(assertion.type);
-  const isAdvisory = assertion.type === "llm";
+  const isAdvisory = assertion.required === false || assertion.type === "llm";
   const canHardCap = !isAdvisory && (assertion.canHardCap === true || severity === "critical");
   return {
     id: `${runId}:finding:${verdict.assertionIndex}`,

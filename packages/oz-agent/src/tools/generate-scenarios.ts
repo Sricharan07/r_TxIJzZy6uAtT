@@ -12,8 +12,8 @@ function baseAssertions(): Assertion[] {
     { type: "shell", name: "Project command succeeds", config: { command: "node src/index.mjs" } },
     {
       type: "shell",
-      name: "Result artifact is valid JSON",
-      config: { command: "test -s src/oz-result.json && node -e \"JSON.parse(require('node:fs').readFileSync('src/oz-result.json','utf8'))\"" },
+      name: "Result contract reports success",
+      config: { command: "test -s src/oz-result.json && node -e \"const r=JSON.parse(require('node:fs').readFileSync('src/oz-result.json','utf8')); if(!r || typeof r !== 'object' || Array.isArray(r)) process.exit(1); if(r.ok !== true) process.exit(2); if(!r.operation && !r.usedEndpoint && !r.usedSdkPackage) process.exit(3);\"" },
     },
   ];
 }
@@ -22,7 +22,7 @@ function nodeEntrypointTask(task: string): string {
   return [
     "Create `src/index.mjs` as the runnable Node entrypoint for this scenario.",
     "The entrypoint must run with `node src/index.mjs` from the project root.",
-    "Write any observed product response or validation result to `src/oz-result.json`.",
+    "Write `src/oz-result.json` as a JSON object with `ok: true` only after a real successful product call or documented local validation; include `operation` plus `usedEndpoint` or `usedSdkPackage`, and include `httpStatus` when an HTTP response was observed.",
     task,
   ].join(" ");
 }

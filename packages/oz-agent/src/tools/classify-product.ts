@@ -154,6 +154,88 @@ function endpointMethod(method: string) {
   return method as "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 }
 
+const SDK_PACKAGE_PATTERNS: Array<{ manager: OzPackageCandidate["manager"]; regex: RegExp }> = [
+  { manager: "npm", regex: /(?:npm\s+(?:install|i)|pnpm\s+add|yarn\s+add)\s+(?:--[a-z0-9-]+\s+)*(@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z0-9._-]+)/gi },
+  { manager: "npm", regex: /(?:import\s+(?:[\s\S]{0,120}?\s+from\s+)?|from\s+)["'](@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z0-9._-]+)["']/gi },
+  { manager: "pip", regex: /pip(?:3)?\s+install\s+([a-z0-9._-]+)/gi },
+  { manager: "go", regex: /go\s+get\s+([a-z0-9._/-]+)/gi },
+];
+
+function languageForManager(manager: OzPackageCandidate["manager"]) {
+  return manager === "npm" ? "node" as const : manager === "pip" ? "python" as const : manager === "go" ? "go" as const : "curl" as const;
+}
+
+function installCommandFor(pkg: OzPackageCandidate): string | undefined {
+  if (pkg.manager === "npm") return `npm install ${pkg.version ? `${pkg.name}@${pkg.version}` : pkg.name}`;
+  if (pkg.manager === "pip") return `pip install ${pkg.version ? `${pkg.name}==${pkg.version}` : pkg.name}`;
+  if (pkg.manager === "go") return `go get ${pkg.name}`;
+  return undefined;
+}
+
+function importHintFor(pkg: OzPackageCandidate): string | undefined {
+  if (pkg.manager === "npm") return `node --input-type=module -e "await import('${pkg.name}')"`;
+  if (pkg.manager === "pip") return `python - <<'PY'\nimport ${pkg.name.replace(/[-.]/g, "_")}\nPY`;
+  return undefined;
+}
+
+function likelySdkSymbol(name: string): boolean {
+  return /^[A-Z][A-Za-z0-9]*(Client|SDK|Api|API|Index|Session|Service|Provider|Store|Database)$/.test(name);
+}
+
+function sdkSymbolsNear(text: string, packageName: string): string[] {
+  const symbols = new Set<string>();
+  const packageIndex = text.indexOf(packageName);
+  const windowText = packageIndex >= 0
+    ? text.slice(Math.max(0, packageIndex - 4_000), Math.min(text.length, packageIndex + 8_000))
+    : text;
+  for (const match of windowText.matchAll(/\b([A-Z][A-Za-z0-9]*(?:Client|SDK|Api|API|Index|Session|Service|Provider|Store|Database))\b/g)) {
+    const symbol = match[1];
+    if (symbol && likelySdkSymbol(symbol)) symbols.add(symbol);
+  }
+  return [...symbols].slice(0, 12);
+}
+
+function sdkMethodsNear(text: string, packageName: string): string[] {
+  const methods = new Set<string>();
+  const packageIndex = text.indexOf(packageName);
+  const windowText = packageIndex >= 0
+    ? text.slice(Math.max(0, packageIndex - 4_000), Math.min(text.length, packageIndex + 8_000))
+    : text;
+  for (const match of windowText.matchAll(/\.([a-z][A-Za-z0-9_]{2,40})\s*\(/g)) {
+    const method = match[1];
+    if (method && !["then", "catch", "map", "filter", "reduce", "log", "error"].includes(method)) methods.add(method);
+  }
+  return [...methods].slice(0, 16);
+}
+
+function packageCandidatesFromDocs(pages: OzCrawledPage[]): OzPackageCandidate[] {
+  const byKey = new Map<string, OzPackageCandidate>();
+  for (const page of pages) {
+    for (const pattern of SDK_PACKAGE_PATTERNS) {
+      for (const match of page.text.matchAll(pattern.regex)) {
+        const name = match[1];
+        if (!name || ["react", "next", "typescript", "express"].includes(name)) continue;
+        const key = `${pattern.manager}:${name}`;
+        const existing = byKey.get(key);
+        const candidate: OzPackageCandidate = {
+          manager: pattern.manager,
+          name,
+          evidence: [evidence(page.url, match[0] ?? name, 0.8)],
+          confidence: 0.8,
+        };
+        byKey.set(key, existing
+          ? {
+              ...existing,
+              confidence: Math.max(existing.confidence, candidate.confidence),
+              evidence: [...existing.evidence, ...candidate.evidence].slice(0, 3),
+            }
+          : candidate);
+      }
+    }
+  }
+  return [...byKey.values()];
+}
+
 function surfaces(pages: OzCrawledPage[]) {
   const heuristicSurfaces = [
     [/quickstart|first call/i, "First successful call"],
@@ -239,16 +321,31 @@ export const classifyProductTool: OzTool<ClassifyProductInput, { profile: OzProd
       auth.envVars = requiredEnv.map((env) => env.name);
     }
     const surfacesResult = surfaces(input.pages);
-    const sdks = input.packages.map((pkg) => ({
-      language: pkg.manager === "npm" ? "node" as const : pkg.manager === "pip" ? "python" as const : "go" as const,
+    const packageCandidates = new Map<string, OzPackageCandidate>();
+    for (const pkg of [...input.packages, ...packageCandidatesFromDocs(input.pages)]) {
+      const key = `${pkg.manager}:${pkg.name}`;
+      const existing = packageCandidates.get(key);
+      packageCandidates.set(key, existing
+        ? {
+            ...existing,
+            version: existing.version ?? pkg.version,
+            confidence: Math.max(existing.confidence, pkg.confidence),
+            evidence: [...existing.evidence, ...pkg.evidence].slice(0, 4),
+          }
+        : pkg);
+    }
+    const sdks = [...packageCandidates.values()].map((pkg) => ({
+      language: languageForManager(pkg.manager),
       packageName: pkg.name,
       manager: pkg.manager,
-      installCommand: pkg.manager === "npm" ? `npm install ${pkg.version ? `${pkg.name}@${pkg.version}` : pkg.name}` : undefined,
-      importHint: pkg.manager === "npm" ? `node --input-type=module -e "await import('${pkg.name}')"` : undefined,
+      installCommand: installCommandFor(pkg),
+      importHint: importHintFor(pkg),
+      symbols: sdkSymbolsNear(text, pkg.name),
+      methods: sdkMethodsNear(text, pkg.name),
       evidence: pkg.evidence,
     }));
     const evidenceSource = input.pages[0]?.url ?? input.productUrl;
-    const confidence = clampConfidence(0.45 + Math.min(0.25, input.pages.length * 0.04) + Math.min(0.18, input.packages.length * 0.09));
+    const confidence = clampConfidence(0.45 + Math.min(0.25, input.pages.length * 0.04) + Math.min(0.18, sdks.length * 0.09));
     return {
       profile: {
         companyName: productName,

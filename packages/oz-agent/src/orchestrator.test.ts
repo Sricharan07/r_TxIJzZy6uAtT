@@ -90,6 +90,43 @@ describe("OzOrchestrator", () => {
     expect(secretAssertions[0]?.config).toMatchObject({ command: expect.stringContaining("sh -c") });
   });
 
+  it("detects SDK packages, symbols, and methods from docs text", async () => {
+    const sdkFetch: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.includes("registry.npmjs.org")) {
+        return new Response(JSON.stringify({ "dist-tags": { latest: "2.0.0" } }), { status: 200 });
+      }
+      if (url.endsWith("/sitemap.xml")) {
+        return response("<urlset><url><loc>https://vector.test/docs/sdk</loc></url></urlset>");
+      }
+      if (url.includes("/docs/sdk")) {
+        return response(`
+          <title>Vector Docs</title>
+          <h1>JavaScript SDK</h1>
+          <p>npm install @vector/search</p>
+          <pre><code>
+            import { VectorClient, SearchIndex } from "@vector/search";
+            const client = new VectorClient({ apiKey: process.env.VECTOR_API_KEY });
+            await client.addDocs("idx", []);
+            await client.query("idx", "hello");
+          </code></pre>
+        `);
+      }
+      return response(`<title>Vector</title><a href="/docs/sdk">Docs</a>`);
+    };
+    const store = new JsonKilnStore(`/tmp/kiln-oz-sdk-${Date.now()}.json`);
+    const user = await store.getOrCreateDevUser();
+    const oz = new OzOrchestrator({ store, fetchImpl: sdkFetch });
+    const job = await oz.createJob({ userId: user.id, productUrl: "https://vector.test", mode: "copilot" });
+    const ready = await oz.runToApproval(job.id);
+
+    const sdk = ready.state.productProfile?.sdks.find((item) => item.packageName === "@vector/search");
+    expect(sdk).toBeDefined();
+    expect(sdk?.symbols).toEqual(expect.arrayContaining(["VectorClient", "SearchIndex"]));
+    expect(sdk?.methods).toEqual(expect.arrayContaining(["addDocs", "query"]));
+    expect(ready.state.suiteDraft?.scenarios.some((scenario) => scenario.id === "sdk_import_init")).toBe(true);
+  });
+
   it("keeps Oz run observations compact", () => {
     const event = observeRunEvent("job-1", "running", {
       t: 1,
@@ -186,5 +223,69 @@ describe("OzOrchestrator", () => {
 
     expect(report.summary).toContain("1/1 agent run passed");
     expect(report.findings).toEqual([]);
+  });
+
+  it("classifies runtime success with advisory surface failures as a harness issue", () => {
+    const run: RunResult = {
+      id: "run-harness",
+      evalId: "eval-1",
+      evalTitle: "Harness eval",
+      task: "Build integration",
+      agentType: "claude-code",
+      status: "completed",
+      errorType: null,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:00:30.000Z",
+      durationSec: 30,
+      totalSteps: 4,
+      tokens: 900,
+      events: [{ t: 10, kind: "api", text: 'Response (HTTP 200): {"ok":true}' }],
+      verdicts: [
+        { assertionIndex: 0, type: "file", name: "Integration entrypoint exists", passed: true },
+        { assertionIndex: 1, type: "shell", name: "Project command succeeds", passed: true },
+        { assertionIndex: 2, type: "shell", name: "Result contract reports success", passed: true },
+        { assertionIndex: 3, type: "shell", name: "Documented product surface is referenced: /v1/manage", passed: false },
+      ],
+      gradeReport: {
+        runId: "run-harness",
+        taskSpecId: "task",
+        mode: "integration-build",
+        buildPhase: "slice-1",
+        taskPassed: false,
+        score: {
+          raw: 0,
+          capped: 0,
+          letter: "F",
+          passRate: 0,
+          confidenceInterval: { low: 0, high: 1 },
+          runs: 1,
+          passedRuns: 0,
+        },
+        findings: [{
+          id: "finding-1",
+          runId: "run-harness",
+          taskSpecId: "task",
+          code: "documented_surface_not_referenced",
+          title: "Documented product surface is referenced: /v1/manage",
+          severity: "low",
+          status: "confirmed",
+          canHardCap: false,
+          evidence: [],
+          codeVsNoCode: "mixed",
+        }],
+        agentMatrix: [],
+        definitionOfDone: [],
+        generatedAt: "2026-01-01T00:00:31.000Z",
+      },
+    };
+    const report = buildOzReport({
+      jobId: "job-1",
+      userId: "user-1",
+      input: { productUrl: "https://example.test", mode: "copilot" },
+      discovery: { docsCandidates: [], selectedDocs: [], githubRepos: [], packages: [], codeExamples: [] },
+    }, [run]);
+
+    expect(report.findings[0]?.code).toBe("harness_issue");
+    expect(report.recommendedFixes[0]?.target).toBe("tests");
   });
 });

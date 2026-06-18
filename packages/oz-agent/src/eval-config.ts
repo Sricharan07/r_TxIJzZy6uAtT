@@ -53,7 +53,11 @@ export function scenarioToEvalConfig({
         `Auth scheme: ${state.productProfile.auth?.scheme ?? "unknown"}`,
         `Auth header: ${state.productProfile.auth?.headerName ?? "not documented"}`,
         `Required env: ${mergeEnvRequirements(state.productProfile.requiredEnv, scenario.requiredEnv).map((env) => env.name).join(", ") || "none detected"}`,
-        `Documented SDKs: ${state.productProfile.sdks.map((sdk) => `${sdk.manager}:${sdk.packageName}`).join(", ") || "none"}`,
+        `Documented SDKs: ${state.productProfile.sdks.map((sdk) => [
+          `${sdk.manager}:${sdk.packageName}`,
+          sdk.symbols?.length ? `symbols=${sdk.symbols.join("|")}` : "",
+          sdk.methods?.length ? `methods=${sdk.methods.slice(0, 8).join("|")}` : "",
+        ].filter(Boolean).join(" ")).join(", ") || "none"}`,
         `Documented APIs: ${state.productProfile.APIs.map((api) => [api.method, api.path || api.name].filter(Boolean).join(" ")).join("; ") || "none mapped"}`,
         "Instruction: Use only documented SDKs listed above. If none are listed, use the documented HTTP API/curl examples and do not search package registries.",
       ].join("\n")

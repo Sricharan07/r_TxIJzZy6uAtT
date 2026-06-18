@@ -174,6 +174,52 @@ describe("grade", () => {
     ]);
   });
 
+  it("does not fail the task for non-required deterministic advisory assertions", async () => {
+    class AdvisorySandbox extends ProjectSandbox {
+      override async exec(cmd: string): Promise<ExecResult> {
+        if (cmd === "missing-check") return { stdout: "", stderr: "surface not referenced\n", code: 1 };
+        return super.exec(cmd);
+      }
+    }
+
+    const config: EvalConfig = {
+      task: "Create the integration entrypoint.",
+      language: "node",
+      context: [],
+      assertions: [
+        { type: "file", name: "entry exists", config: { path: "src/index.ts" } },
+        {
+          type: "shell",
+          name: "advisory documented surface",
+          config: { command: "missing-check" },
+          required: false,
+          severityOnFail: "low",
+          frictionCode: "documented_surface_not_referenced",
+          canHardCap: false,
+          codeVsNoCode: "mixed",
+        },
+      ],
+      metadata: { agentType: "claude-code", timeoutSec: 300, modelId: "test-model" },
+    };
+
+    const result = await gradeWithReport(
+      config,
+      new AdvisorySandbox({ "src/index.ts": "export const ok = true;" }),
+      { runId: "run_advisory_static", generatedAt: "2026-06-01T00:00:00.000Z" },
+    );
+
+    expect(result.gradeReport.taskPassed).toBe(true);
+    expect(result.gradeReport.score.letter).toBe("A+");
+    expect(result.gradeReport.findings).toEqual([
+      expect.objectContaining({
+        status: "advisory",
+        severity: "low",
+        code: "documented_surface_not_referenced",
+        canHardCap: false,
+      }),
+    ]);
+  });
+
   it("does not emit static findings for a clean generated integration", async () => {
     const result = await gradeWithReport(
       staticConfig(

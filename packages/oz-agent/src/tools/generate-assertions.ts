@@ -6,13 +6,18 @@ interface GenerateAssertionsInput {
   scenarios: OzScenario[];
 }
 
-function sdkAssertion(profile: OzProductProfile): Assertion | null {
+function sdkAssertion(profile: OzProductProfile, required: boolean): Assertion | null {
   const sdk = profile.sdks.find((item) => item.language === "node");
   if (!sdk) return null;
   return {
     type: "shell",
     name: `Official SDK is referenced: ${sdk.packageName}`,
     config: { command: `grep -R "${sdk.packageName.replace(/"/g, "\\\"")}" package.json src README.md 2>/dev/null` },
+    required,
+    severityOnFail: required ? "high" : "low",
+    frictionCode: "sdk_not_referenced",
+    canHardCap: required,
+    codeVsNoCode: "code",
   };
 }
 
@@ -29,19 +34,29 @@ function grepLiteralAssertion(name: string, value: string): Assertion {
     type: "shell",
     name,
     config: { command: `grep -R -F -- ${shellSingleQuote(value)} src README.md package.json 2>/dev/null` },
+    required: false,
+    severityOnFail: "low",
+    frictionCode: "documented_surface_not_referenced",
+    canHardCap: false,
+    codeVsNoCode: "mixed",
   };
 }
 
 function documentedSurfaceAssertions(profile: OzProductProfile): Assertion[] {
-  const urls = new Set<string>();
+  const surfaces = new Set<string>();
   for (const api of profile.APIs) {
-    if (api.path && api.path !== "/") urls.add(api.path);
-    for (const item of api.evidence) {
-      for (const match of item.source.matchAll(/https?:\/\/[^\s)"']+/g)) urls.add(match[0].replace(/[),.]+$/g, ""));
-      for (const match of item.quote.matchAll(/https?:\/\/[^\s)"']+/g)) urls.add(match[0].replace(/[),.]+$/g, ""));
+    if (!api.path || api.path === "/") continue;
+    try {
+      const url = new URL(api.path);
+      surfaces.add(url.pathname === "/" ? url.origin : `${url.origin}${url.pathname}`);
+      surfaces.add(url.pathname);
+    } catch {
+      surfaces.add(api.path);
     }
   }
-  const candidates = [...urls].filter((item) => item.length >= 4).slice(0, 2);
+  const candidates = [...surfaces]
+    .filter((item) => item.length >= 4 && !/^https?:\/\/[^/]+\/?$/i.test(item))
+    .slice(0, 2);
   return candidates.map((item) => grepLiteralAssertion(`Documented product surface is referenced: ${item}`, item));
 }
 
@@ -57,7 +72,7 @@ function secretLeakAssertions(profile: OzProductProfile): Assertion[] {
 
 function scenarioAssertions(profile: OzProductProfile, scenario: OzScenario): Assertion[] {
   const assertions = [...scenario.assertions];
-  const sdk = sdkAssertion(profile);
+  const sdk = sdkAssertion(profile, scenario.id.includes("sdk"));
   if (sdk) assertions.push(sdk);
   if (scenario.id === "first_successful_call" || scenario.id.includes("http")) {
     assertions.push(...documentedSurfaceAssertions(profile));
