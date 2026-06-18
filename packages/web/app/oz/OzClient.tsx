@@ -39,6 +39,15 @@ interface RunInfrastructureHealth {
   blockers: string[];
 }
 
+interface OzClientUser {
+  login: string;
+  avatarUrl: string;
+}
+
+interface OzClientProps {
+  user: OzClientUser | null;
+}
+
 const MODE_LABELS: Array<{ mode: OzMode; label: string; detail: string }> = [
   { mode: "copilot", label: "Copilot", detail: "Oz discovers and generates; you approve before run." },
   { mode: "autopilot", label: "Autopilot", detail: "Oz runs automatically when no secrets block it." },
@@ -102,7 +111,7 @@ function phaseIndexForStatus(status: OzJob["status"]): number {
   return 0;
 }
 
-function OzPageInner() {
+function OzPageInner({ user }: OzClientProps) {
   const router = useRouter();
   const search = useSearchParams();
   const jobId = search.get("job");
@@ -124,11 +133,12 @@ function OzPageInner() {
   const [infraHealth, setInfraHealth] = useState<RunInfrastructureHealth | null>(null);
   const [runBlockers, setRunBlockers] = useState<string[]>([]);
   const live = job ? !TERMINAL.has(job.status) : false;
+  const signedIn = Boolean(user);
 
   async function load(id: string): Promise<string | null> {
     const [jobRes, eventsRes] = await Promise.all([
-      fetch(`/api/oz/jobs/${encodeURIComponent(id)}`),
-      fetch(`/api/oz/jobs/${encodeURIComponent(id)}/events?limit=250`),
+      fetch(`/api/oz/jobs/${encodeURIComponent(id)}`, { credentials: "same-origin" }),
+      fetch(`/api/oz/jobs/${encodeURIComponent(id)}/events?limit=250`, { credentials: "same-origin" }),
     ]);
     const jobBody = (await jobRes.json()) as JobResponse;
     const eventsBody = (await eventsRes.json()) as EventsResponse;
@@ -156,7 +166,10 @@ function OzPageInner() {
       try {
         const cursor = await load(jobId);
         if (cancelled) return;
-        source = new EventSource(`/api/oz/jobs/${encodeURIComponent(jobId)}/stream${cursor ? `?after=${encodeURIComponent(cursor)}` : ""}`);
+        source = new EventSource(
+          `/api/oz/jobs/${encodeURIComponent(jobId)}/stream${cursor ? `?after=${encodeURIComponent(cursor)}` : ""}`,
+          { withCredentials: true },
+        );
         source.addEventListener("oz", (message) => {
           const data = JSON.parse((message as MessageEvent).data) as StreamResponse;
           if (data.error) {
@@ -214,7 +227,7 @@ function OzPageInner() {
     let cancelled = false;
     const refreshHealth = async () => {
       try {
-        const response = await fetch("/api/system/health");
+        const response = await fetch("/api/system/health", { credentials: "same-origin" });
         const health = (await response.json()) as RunInfrastructureHealth;
         if (!cancelled) setInfraHealth(health);
       } catch {
@@ -266,9 +279,16 @@ function OzPageInner() {
     setError(null);
     setRunBlockers([]);
     setAuthRequired(false);
+    if (!signedIn) {
+      setAuthRequired(true);
+      setError("GitHub sign-in required");
+      setBusy(false);
+      return;
+    }
     try {
       const res = await fetch("/api/oz/jobs", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ productUrl, mode, userGoal: goal || undefined, preferredLanguage: "node", agentTargets: ["claude-code"] }),
       });
@@ -293,6 +313,7 @@ function OzPageInner() {
     try {
       const res = await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}${path}`, {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body ?? {}),
       });
@@ -316,7 +337,7 @@ function OzPageInner() {
     setError(null);
     setRunBlockers([]);
     try {
-      const res = await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}/stop`, { method: "POST" });
+      const res = await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}/stop`, { method: "POST", credentials: "same-origin" });
       const data = (await res.json()) as ActionResponse;
       if (!res.ok) throw new Error(data.error ?? "Could not stop Oz job.");
       await load(job.id);
@@ -348,8 +369,8 @@ function OzPageInner() {
     setError(null);
     try {
       const res = method === "TERMINATE"
-        ? await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}/terminate`, { method: "POST" })
-        : await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}`, { method: "DELETE" });
+        ? await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}/terminate`, { method: "POST", credentials: "same-origin" })
+        : await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}`, { method: "DELETE", credentials: "same-origin" });
       const data = (await res.json()) as ActionResponse;
       if (!res.ok) throw new Error(data.error ?? "Could not clean up Oz job.");
       await clearCurrentJob();
@@ -422,15 +443,26 @@ function OzPageInner() {
             <div className="oz-launch-panel">
               <div className="oz-signin-card">
                 <div>
-                  <strong>Workspace access</strong>
-                  <span>Sign in so jobs, runs, and reports are tied to your account.</span>
+                  <strong>{signedIn ? "Workspace connected" : "Workspace access"}</strong>
+                  <span>
+                    {signedIn
+                      ? `Jobs, runs, and reports are tied to ${user?.login}.`
+                      : "Sign in so jobs, runs, and reports are tied to your account."}
+                  </span>
                 </div>
-                <Link className="btn btn-primary github-btn" href="/auth/github?returnTo=/oz">
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
-                    <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.62 2.29 6.69 5.47 7.78.4.08.55-.18.55-.39 0-.19-.01-.84-.01-1.52-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.03 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.37 7.37 0 0 1 8 4.02c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.13-1.87 3.82-3.65 4.03.29.26.54.75.54 1.52 0 1.09-.01 1.97-.01 2.24 0 .21.15.47.55.39A8.1 8.1 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z" />
-                  </svg>
-                  Continue with GitHub
-                </Link>
+                {signedIn ? (
+                  <span className="oz-session-chip">
+                    {user?.avatarUrl ? <img src={user.avatarUrl} alt="" /> : null}
+                    {user?.login}
+                  </span>
+                ) : (
+                  <Link className="btn btn-primary github-btn" href="/auth/github?returnTo=/oz">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+                      <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.62 2.29 6.69 5.47 7.78.4.08.55-.18.55-.39 0-.19-.01-.84-.01-1.52-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.03 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.37 7.37 0 0 1 8 4.02c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.13-1.87 3.82-3.65 4.03.29.26.54.75.54 1.52 0 1.09-.01 1.97-.01 2.24 0 .21.15.47.55.39A8.1 8.1 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z" />
+                    </svg>
+                    Continue with GitHub
+                  </Link>
+                )}
               </div>
 
               <label className="field-label" htmlFor="oz-product-url">Product URL</label>
@@ -702,10 +734,10 @@ function OzPageInner() {
   );
 }
 
-export default function OzPage() {
+export default function OzPage(props: OzClientProps) {
   return (
     <Suspense fallback={<div className="oz-page">Loading Oz...</div>}>
-      <OzPageInner />
+      <OzPageInner {...props} />
     </Suspense>
   );
 }

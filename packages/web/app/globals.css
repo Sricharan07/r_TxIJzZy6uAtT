@@ -1105,6 +1105,24 @@ textarea.input { min-height: 80px; }
   font-size: 12px;
   line-height: 1.45;
 }
+.oz-session-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 800;
+}
+.oz-session-chip img {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+}
 .oz-auth-error {
   border-color: rgba(37, 99, 235, 0.45);
   background: var(--blue-bg);
