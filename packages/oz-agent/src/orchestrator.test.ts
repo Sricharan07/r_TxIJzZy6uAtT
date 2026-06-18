@@ -268,12 +268,14 @@ describe("OzOrchestrator", () => {
     });
     const firstCallConfig = scenarioToEvalConfig({ state: ready.state, scenario: firstCall! });
     expect(firstCallConfig.productProfile?.packages).toEqual([]);
+    expect(firstCallConfig.productProfile?.runtime.image).toBe("default");
     expect(firstCallConfig.context[0]?.content).toContain("Primary SDK for this node scenario: @moss-dev/moss");
     const sdkScenario = ready.state.suiteDraft?.scenarios.find((scenario) => scenario.id === "sdk_import_init");
     expect(sdkScenario).toBeDefined();
     expect(sdkScenario?.assertions.some((assertion) => assertion.name === "Official SDK is referenced: @moss-dev/moss")).toBe(true);
     const sdkConfig = scenarioToEvalConfig({ state: ready.state, scenario: sdkScenario! });
     expect(sdkConfig.productProfile?.packages?.map((pkg) => `${pkg.manager}:${pkg.name}`)).toEqual(["npm:@moss-dev/moss"]);
+    expect(sdkConfig.productProfile?.runtime).toMatchObject({ image: "ubuntu-24.04-node22", nodeVersion: ">=22" });
   });
 
   it("keeps Oz run observations compact", () => {

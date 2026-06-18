@@ -44,6 +44,18 @@ function packagesForScenario(packages: ProductPackage[] | undefined, language: L
   return compatible.slice(0, 1);
 }
 
+function runtimeForScenario(runtime: ProductProfile["runtime"], language: Language, scenario: OzScenario): ProductProfile["runtime"] {
+  if (scenario.id.includes("sdk") && language === "node") {
+    return {
+      ...runtime,
+      language,
+      image: "ubuntu-24.04-node22",
+      nodeVersion: ">=22",
+    };
+  }
+  return { ...runtime, language };
+}
+
 export function scenarioToEvalConfig({
   state,
   scenario,
@@ -61,7 +73,7 @@ export function scenarioToEvalConfig({
   const mergedProfile: ProductProfile | undefined = productProfile
     ? {
         ...productProfile,
-        runtime: { ...productProfile.runtime, language: language as Language },
+        runtime: runtimeForScenario(productProfile.runtime, language as Language, scenario),
         packages: packagesForScenario(productProfile.packages, language as Language, scenario, primarySdk),
         requiredEnv: mergeEnvRequirements(productProfile.requiredEnv, scenario.requiredEnv),
         setupSteps: [...(productProfile.setupSteps ?? []), ...scenario.setupSteps],
