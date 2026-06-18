@@ -189,6 +189,14 @@ describe("executeRun", () => {
             docsSources: [],
             requiredEnv: [{ name: "KILN_PRODUCT_TOKEN", scopes: ["agent", "assertion"], required: true }],
           },
+          assertions: [
+            ...config.assertions,
+            {
+              type: "shell",
+              name: "Assertion output is redacted",
+              config: { command: "node -e \"process.stdout.write(process.env.KILN_PRODUCT_TOKEN || '')\"" },
+            },
+          ],
         },
         {
           sandbox: new LocalSandbox("redacted-product-env-test"),
@@ -200,10 +208,13 @@ describe("executeRun", () => {
       );
 
       const stored = result.events.map((event) => `${event.text} ${event.annotation ?? ""}`).join("\n");
+      const verdicts = JSON.stringify(result.verdicts);
       expect(streamed.join("\n")).not.toContain("runner-secret-token");
       expect(stored).not.toContain("runner-secret-token");
+      expect(verdicts).not.toContain("runner-secret-token");
       expect(streamed.join("\n")).toContain("[redacted:KILN_PRODUCT_TOKEN]");
       expect(stored).toContain("[redacted:KILN_PRODUCT_TOKEN]");
+      expect(verdicts).toContain("[redacted:KILN_PRODUCT_TOKEN]");
     } finally {
       if (previous === undefined) delete process.env.KILN_PRODUCT_TOKEN;
       else process.env.KILN_PRODUCT_TOKEN = previous;

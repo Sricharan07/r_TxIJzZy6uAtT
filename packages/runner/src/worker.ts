@@ -283,6 +283,11 @@ function redactRunEvent(config: EvalConfig, event: AgentEvent): AgentEvent {
   return { ...event, text, ...(annotation === undefined ? {} : { annotation }) };
 }
 
+function redactJsonValue<T>(config: EvalConfig, value: T): T {
+  if (value === undefined || value === null) return value;
+  return JSON.parse(redactProductEnvValues(config, JSON.stringify(value))) as T;
+}
+
 async function emitRunEvent(
   config: EvalConfig,
   events: AgentEvent[],
@@ -500,8 +505,8 @@ export async function executeRun(
         tokens,
       },
     });
-    verdicts = grading.verdicts;
-    gradeReport = grading.gradeReport;
+    verdicts = grading.verdicts.map((verdict) => redactJsonValue(config, verdict));
+    gradeReport = redactJsonValue(config, grading.gradeReport);
     status = "completed";
   } catch (err) {
     // Decision 18: classify our own failures as platform errors.
