@@ -191,11 +191,16 @@ describe("OzOrchestrator", () => {
     expect(ready.state.suiteDraft?.scenarios.some((scenario) => scenario.id === "sdk_import_init")).toBe(true);
     const firstCall = ready.state.suiteDraft?.scenarios.find((scenario) => scenario.id === "first_successful_call");
     expect(firstCall).toBeDefined();
+    expect(firstCall?.assertions.some((assertion) => assertion.name.startsWith("Official SDK is referenced"))).toBe(false);
+    expect(firstCall?.assertions.find((assertion) => assertion.name.includes("/v1/manage"))?.config).toMatchObject({
+      command: expect.stringContaining("sh -c"),
+    });
     const firstCallConfig = scenarioToEvalConfig({ state: ready.state, scenario: firstCall! });
     expect(firstCallConfig.productProfile?.packages).toEqual([]);
     expect(firstCallConfig.context[0]?.content).toContain("Primary SDK for this node scenario: @moss-dev/moss");
     const sdkScenario = ready.state.suiteDraft?.scenarios.find((scenario) => scenario.id === "sdk_import_init");
     expect(sdkScenario).toBeDefined();
+    expect(sdkScenario?.assertions.some((assertion) => assertion.name === "Official SDK is referenced: @moss-dev/moss")).toBe(true);
     const sdkConfig = scenarioToEvalConfig({ state: ready.state, scenario: sdkScenario! });
     expect(sdkConfig.productProfile?.packages?.map((pkg) => `${pkg.manager}:${pkg.name}`)).toEqual(["npm:@moss-dev/moss"]);
   });

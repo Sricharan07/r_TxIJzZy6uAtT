@@ -12,7 +12,7 @@ function sdkAssertion(profile: OzProductProfile, required: boolean): Assertion |
   return {
     type: "shell",
     name: `Official SDK is referenced: ${sdk.packageName}`,
-    config: { command: `grep -R "${sdk.packageName.replace(/"/g, "\\\"")}" package.json src README.md 2>/dev/null` },
+    config: { command: grepExistingPathsCommand(sdk.packageName, { fixed: true }) },
     required,
     severityOnFail: required ? "high" : "low",
     frictionCode: "sdk_not_referenced",
@@ -29,11 +29,32 @@ function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function grepExistingPathsCommand(
+  pattern: string,
+  { fixed = false, paths = ["src", "README.md", "package.json"] }: { fixed?: boolean; paths?: string[] } = {},
+): string {
+  const grepFlags = fixed ? "-F" : "-E";
+  const script = [
+    "pattern=$1",
+    "shift",
+    "status=1",
+    `for path in "$@"; do [ -e "$path" ] || continue; if grep -R ${grepFlags} -- "$pattern" "$path" >/dev/null 2>&1; then status=0; fi; done`,
+    "exit \"$status\"",
+  ].join("; ");
+  return [
+    "sh -c",
+    shellSingleQuote(script),
+    "--",
+    shellSingleQuote(pattern),
+    ...paths.map(shellSingleQuote),
+  ].join(" ");
+}
+
 function grepLiteralAssertion(name: string, value: string): Assertion {
   return {
     type: "shell",
     name,
-    config: { command: `grep -R -F -- ${shellSingleQuote(value)} src README.md package.json 2>/dev/null` },
+    config: { command: grepExistingPathsCommand(value, { fixed: true }) },
     required: false,
     severityOnFail: "low",
     frictionCode: "documented_surface_not_referenced",
@@ -72,7 +93,12 @@ function secretLeakAssertions(profile: OzProductProfile): Assertion[] {
 
 function scenarioAssertions(profile: OzProductProfile, scenario: OzScenario): Assertion[] {
   const assertions = [...scenario.assertions];
-  const sdk = sdkAssertion(profile, scenario.id.includes("sdk"));
+  const sdkRequired = scenario.id.includes("sdk") || (
+    scenario.id === "first_successful_call" &&
+    profile.APIs.length === 0 &&
+    profile.sdks.some((sdk) => sdk.language === "node")
+  );
+  const sdk = sdkRequired ? sdkAssertion(profile, true) : null;
   if (sdk) assertions.push(sdk);
   if (scenario.id === "first_successful_call" || scenario.id.includes("http")) {
     assertions.push(...documentedSurfaceAssertions(profile));
@@ -82,21 +108,21 @@ function scenarioAssertions(profile: OzProductProfile, scenario: OzScenario): As
     assertions.push({
       type: "shell",
       name: "Missing credential path is documented",
-      config: { command: "grep -R \"missing\\|required\\|API\" src README.md 2>/dev/null" },
+      config: { command: grepExistingPathsCommand("missing|required|API", { paths: ["src", "README.md"] }) },
     });
   }
   if (scenario.id.includes("webhook")) {
     assertions.push({
       type: "shell",
       name: "Webhook signature verification is implemented",
-      config: { command: "grep -R \"signature\\|verify\" src README.md 2>/dev/null" },
+      config: { command: grepExistingPathsCommand("signature|verify", { paths: ["src", "README.md"] }) },
     });
   }
   if (scenario.id.includes("idempot")) {
     assertions.push({
       type: "shell",
       name: "Idempotency is handled",
-      config: { command: "grep -R \"idempot\" src README.md 2>/dev/null" },
+      config: { command: grepExistingPathsCommand("idempot", { paths: ["src", "README.md"] }) },
     });
   }
   assertions.push({

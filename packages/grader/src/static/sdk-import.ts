@@ -114,6 +114,13 @@ function expectedPackages(context: string): string[] {
   return [...expected];
 }
 
+function expectedPackagesForConfig(context: StaticGraderContext): string[] {
+  if (context.config.productProfile) {
+    return [...new Set((context.config.productProfile.packages ?? []).map((pkg) => pkg.name))];
+  }
+  return expectedPackages(contextText(context.config));
+}
+
 export async function runSdkImportGrader(
   context: StaticGraderContext,
 ): Promise<Finding[]> {
@@ -146,7 +153,7 @@ export async function runSdkImportGrader(
     }
   }
 
-  for (const expected of expectedPackages(contextText(context.config))) {
+  for (const expected of expectedPackagesForConfig(context)) {
     if (!declared.has(expected) && !imported.has(expected)) {
       findings.push(
         makeFinding({

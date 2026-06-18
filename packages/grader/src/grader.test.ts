@@ -70,6 +70,17 @@ function staticConfig(task: string, context = ""): EvalConfig {
   };
 }
 
+function productProfile(packages: NonNullable<EvalConfig["productProfile"]>["packages"] = []): NonNullable<EvalConfig["productProfile"]> {
+  return {
+    companyName: "Acme",
+    productName: "Acme",
+    productType: "other",
+    runtime: { language: "node" },
+    docsSources: [],
+    packages,
+  };
+}
+
 function findingCodes(report: GradeReport): string[] {
   return report.findings.map((finding) => finding.code);
 }
@@ -284,6 +295,39 @@ describe("grade", () => {
         "src/index.ts": "export const client = {};",
       }),
       { runId: "run_sdk_missing", generatedAt: "2026-06-01T00:00:00.000Z" },
+    );
+
+    expect(findingCodes(result.gradeReport)).toContain("sdk_not_discovered");
+  });
+
+  it("does not require SDK packages for product-profile scenarios with no setup packages", async () => {
+    const result = await gradeWithReport(
+      {
+        ...staticConfig("Build the HTTP integration.", "npm install acme-payments-sdk"),
+        productProfile: productProfile([]),
+      },
+      new ProjectSandbox({
+        "package.json": JSON.stringify({ dependencies: {} }),
+        "src/index.ts": "await fetch('https://api.acme.test/v1/manage');",
+      }),
+      { runId: "run_http_no_sdk_expected", generatedAt: "2026-06-01T00:00:00.000Z" },
+    );
+
+    expect(findingCodes(result.gradeReport)).not.toContain("sdk_not_discovered");
+    expect(result.gradeReport.taskPassed).toBe(true);
+  });
+
+  it("uses product-profile setup packages as required SDK expectations", async () => {
+    const result = await gradeWithReport(
+      {
+        ...staticConfig("Build the SDK integration."),
+        productProfile: productProfile([{ manager: "npm", name: "acme-payments-sdk" }]),
+      },
+      new ProjectSandbox({
+        "package.json": JSON.stringify({ dependencies: {} }),
+        "src/index.ts": "export const client = {};",
+      }),
+      { runId: "run_profile_sdk_missing", generatedAt: "2026-06-01T00:00:00.000Z" },
     );
 
     expect(findingCodes(result.gradeReport)).toContain("sdk_not_discovered");
