@@ -422,6 +422,14 @@ export function createHostManagerServer(driver: FirecrackerDriver, token?: strin
         return;
       }
       const url = new URL(req.url ?? "/", "http://host-manager");
+      if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/v1/health")) {
+        send(res, 200, {
+          ok: true,
+          service: "kiln-firecracker-host-manager",
+          checkedAt: new Date().toISOString(),
+        });
+        return;
+      }
       if (req.method === "POST" && url.pathname === "/v1/sandboxes") {
         const body = await jsonBody(req);
         const sandboxId = String(body.sandboxId ?? "");

@@ -32,7 +32,7 @@ export async function GET(req: Request): Promise<Response> {
         }
         sent = run.events.length;
 
-        if (run.status === "completed" || run.status === "errored") {
+        if (run.status === "completed" || run.status === "errored" || run.status === "canceled") {
           controller.enqueue(encoder.encode(`event: done\ndata: {}\n\n`));
           controller.close();
           return;

@@ -384,7 +384,7 @@ export interface Eval {
 }
 
 /** Lifecycle status of a run (Decision 11 / 18). */
-export type RunStatus = "pending" | "running" | "completed" | "errored";
+export type RunStatus = "pending" | "running" | "completed" | "errored" | "canceled";
 
 /** Distinguishes the user's API signal from our infra failures (Decision 18). */
 export type ErrorType = null | "platform" | "timeout";
@@ -449,6 +449,20 @@ export interface RunResult {
   gradeReport?: GradeReport;
 }
 
+export type ServiceType = "runner";
+
+export interface ServiceHeartbeat {
+  serviceId: string;
+  serviceType: ServiceType;
+  status: "online";
+  lastSeenAt: string;
+  version?: string;
+  queueName?: string;
+  concurrency?: number;
+  sandboxMode?: string;
+  metadata?: Record<string, unknown>;
+}
+
 export type OzMode = "copilot" | "autopilot" | "manual";
 
 export type OzJobStatus =
@@ -464,7 +478,8 @@ export type OzJobStatus =
   | "reporting"
   | "complete"
   | "blocked"
-  | "failed";
+  | "failed"
+  | "stopped";
 
 export interface OzEvidence {
   source: string;
@@ -657,7 +672,8 @@ export type OzEventKind =
   | "finding.created"
   | "report.created"
   | "job.blocked"
-  | "job.failed";
+  | "job.failed"
+  | "job.stopped";
 
 export interface OzEvent {
   id?: string;

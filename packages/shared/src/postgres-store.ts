@@ -8,6 +8,7 @@ import {
   type OzEventRow,
   type OzJobRow,
   type RunRow,
+  type ServiceHeartbeatRow,
   type UserRow,
   type VerdictRow,
 } from "./db/schema.js";
@@ -25,6 +26,8 @@ import type {
   OzJobStatus,
   OzMode,
   RunResult,
+  ServiceHeartbeat,
+  ServiceType,
   User,
   Verdict,
 } from "./types.js";
@@ -95,6 +98,20 @@ function toOzArtifact(row: OzArtifactRow): OzArtifact {
     data: row.data ?? undefined,
     blobUrl: row.blob_url ?? undefined,
     createdAt: row.created_at,
+  };
+}
+
+function toServiceHeartbeat(row: ServiceHeartbeatRow): ServiceHeartbeat {
+  return {
+    serviceId: row.service_id,
+    serviceType: row.service_type as ServiceHeartbeat["serviceType"],
+    status: "online",
+    lastSeenAt: row.last_seen_at,
+    version: row.version ?? undefined,
+    queueName: row.queue_name ?? undefined,
+    concurrency: row.concurrency ?? undefined,
+    sandboxMode: row.sandbox_mode ?? undefined,
+    metadata: row.metadata ? (row.metadata as Record<string, unknown>) : undefined,
   };
 }
 
@@ -301,28 +318,16 @@ export class PostgresKilnStore implements KilnStore {
     }
   }
 
-  async stopRuns(runIds: string[], reason: string): Promise<void> {
+  async stopRuns(runIds: string[], _reason: string): Promise<void> {
     if (runIds.length === 0) return;
     await this.query(
       `UPDATE runs
-       SET status = 'errored',
-           error_type = COALESCE(error_type, 'platform'),
+       SET status = 'canceled',
+           error_type = NULL,
            finished_at = COALESCE(finished_at, now()),
-           grade_report = COALESCE(grade_report, jsonb_build_object(
-             'summary', $2::text,
-             'score', jsonb_build_object(
-               'letter', 'F',
-               'passedRuns', 0,
-               'runs', 1,
-               'passRate', 0,
-               'confidenceInterval', jsonb_build_array(0, 0)
-             ),
-             'findings', '[]'::jsonb,
-             'evidence', '[]'::jsonb,
-             'recommendations', '[]'::jsonb
-           ))
+           grade_report = NULL
        WHERE id::text = ANY($1) AND status IN ('pending', 'running')`,
-      [runIds, reason],
+      [runIds],
     );
   }
 
@@ -346,6 +351,44 @@ export class PostgresKilnStore implements KilnStore {
     } finally {
       client.release();
     }
+  }
+
+  async upsertServiceHeartbeat(heartbeat: ServiceHeartbeat): Promise<void> {
+    await this.query(
+      `INSERT INTO service_heartbeats
+         (service_id, service_type, status, last_seen_at, version, queue_name, concurrency, sandbox_mode, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (service_id) DO UPDATE
+       SET service_type = EXCLUDED.service_type,
+           status = EXCLUDED.status,
+           last_seen_at = EXCLUDED.last_seen_at,
+           version = EXCLUDED.version,
+           queue_name = EXCLUDED.queue_name,
+           concurrency = EXCLUDED.concurrency,
+           sandbox_mode = EXCLUDED.sandbox_mode,
+           metadata = EXCLUDED.metadata`,
+      [
+        heartbeat.serviceId,
+        heartbeat.serviceType,
+        heartbeat.status,
+        heartbeat.lastSeenAt,
+        heartbeat.version ?? null,
+        heartbeat.queueName ?? null,
+        heartbeat.concurrency ?? null,
+        heartbeat.sandboxMode ?? null,
+        heartbeat.metadata ? JSON.stringify(heartbeat.metadata) : null,
+      ],
+    );
+  }
+
+  async listServiceHeartbeats(serviceType?: ServiceType): Promise<ServiceHeartbeat[]> {
+    const result = await this.query<ServiceHeartbeatRow>(
+      serviceType
+        ? "SELECT * FROM service_heartbeats WHERE service_type = $1 ORDER BY last_seen_at DESC"
+        : "SELECT * FROM service_heartbeats ORDER BY last_seen_at DESC",
+      serviceType ? [serviceType] : [],
+    );
+    return result.rows.map(toServiceHeartbeat);
   }
 
   async createOzJob(userId: string, inputUrl: string, mode: OzMode, state: OzAgentState): Promise<OzJob> {

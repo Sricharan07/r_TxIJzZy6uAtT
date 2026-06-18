@@ -10,6 +10,8 @@ import type {
   OzJob,
   OzMode,
   RunResult,
+  ServiceHeartbeat,
+  ServiceType,
   User,
 } from "./types.js";
 import { MOCK_EVAL, MOCK_RUN, MOCK_RUN_ERROR, MOCK_RUN_FIXED, MOCK_USER } from "./mock.js";
@@ -23,6 +25,7 @@ interface StoreState {
   ozJobs: OzJob[];
   ozEvents: OzEvent[];
   ozArtifacts: OzArtifact[];
+  serviceHeartbeats: ServiceHeartbeat[];
   ozFeedbackEvents: Array<{
     id: string;
     jobId: string;
@@ -63,6 +66,8 @@ export interface KilnStore {
   saveRun(run: RunResult): Promise<void>;
   stopRuns(runIds: string[], reason: string): Promise<void>;
   deleteRuns(runIds: string[], evalId?: string): Promise<void>;
+  upsertServiceHeartbeat(heartbeat: ServiceHeartbeat): Promise<void>;
+  listServiceHeartbeats(serviceType?: ServiceType): Promise<ServiceHeartbeat[]>;
   createOzJob(userId: string, inputUrl: string, mode: OzMode, state: OzAgentState): Promise<OzJob>;
   getOzJob(id: string): Promise<OzJob | null>;
   listOzJobs(userId: string): Promise<OzJob[]>;
@@ -97,6 +102,7 @@ function defaultState(): StoreState {
     ozJobs: [],
     ozEvents: [],
     ozArtifacts: [],
+    serviceHeartbeats: [],
     ozFeedbackEvents: [],
   };
 }
@@ -253,8 +259,8 @@ export class JsonKilnStore implements KilnStore {
     const now = nowIso();
     for (const run of state.runs) {
       if (!runIds.includes(run.id) || (run.status !== "pending" && run.status !== "running")) continue;
-      run.status = "errored";
-      run.errorType = "platform";
+      run.status = "canceled";
+      run.errorType = null;
       run.finishedAt = run.finishedAt ?? now;
       run.events = [
         ...run.events,
@@ -262,6 +268,21 @@ export class JsonKilnStore implements KilnStore {
       ];
     }
     await this.persist(state);
+  }
+
+  async upsertServiceHeartbeat(heartbeat: ServiceHeartbeat): Promise<void> {
+    const state = await this.load();
+    const idx = state.serviceHeartbeats.findIndex((item) => item.serviceId === heartbeat.serviceId);
+    if (idx >= 0) state.serviceHeartbeats[idx] = heartbeat;
+    else state.serviceHeartbeats.push(heartbeat);
+    await this.persist(state);
+  }
+
+  async listServiceHeartbeats(serviceType?: ServiceType): Promise<ServiceHeartbeat[]> {
+    const state = await this.load();
+    return state.serviceHeartbeats
+      .filter((heartbeat) => !serviceType || heartbeat.serviceType === serviceType)
+      .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt));
   }
 
   async deleteRuns(runIds: string[], evalId?: string): Promise<void> {
@@ -288,6 +309,7 @@ export class JsonKilnStore implements KilnStore {
         ozJobs: parsed.ozJobs ?? [],
         ozEvents: parsed.ozEvents ?? [],
         ozArtifacts: parsed.ozArtifacts ?? [],
+        serviceHeartbeats: parsed.serviceHeartbeats ?? [],
         ozFeedbackEvents: parsed.ozFeedbackEvents ?? [],
       };
     } catch {

@@ -12,6 +12,11 @@ interface GitHubUser {
   avatar_url: string;
 }
 
+function safeReturnTo(value: string | undefined): string {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) return "/";
+  return value;
+}
+
 async function exchangeCode(code: string, appUrl: string): Promise<string> {
   const res = await fetch("https://github.com/login/oauth/access_token", {
     method: "POST",
@@ -43,6 +48,7 @@ export async function GET(req: Request): Promise<void> {
   const state = url.searchParams.get("state");
   const cookieStore = await cookies();
   const expectedState = cookieStore.get("kiln_oauth_state")?.value;
+  const returnTo = safeReturnTo(cookieStore.get("kiln_oauth_return_to")?.value);
 
   if (!code || !state || state !== expectedState) {
     redirect("/");
@@ -67,5 +73,12 @@ export async function GET(req: Request): Promise<void> {
     path: "/",
     maxAge: 0,
   });
-  redirect("/");
+  cookieStore.set("kiln_oauth_return_to", "", {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: appUrl.startsWith("https://"),
+    path: "/",
+    maxAge: 0,
+  });
+  redirect(returnTo);
 }

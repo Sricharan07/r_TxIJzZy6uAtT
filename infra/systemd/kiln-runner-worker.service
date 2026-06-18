@@ -1,5 +1,6 @@
 [Unit]
 Description=Kiln Runner Worker
+Requires=kiln-firecracker-host-manager.service
 After=network-online.target kiln-firecracker-host-manager.service
 Wants=network-online.target
 

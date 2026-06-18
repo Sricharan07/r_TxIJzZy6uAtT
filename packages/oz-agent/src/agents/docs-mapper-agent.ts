@@ -2,8 +2,10 @@ import type { OzAgentState } from "@kiln/shared";
 
 export interface DocsMapItem {
   surface: string;
+  surfaces?: string[];
   sourceUrl: string;
   signal: string;
+  signals?: string[];
   confidence: number;
 }
 
@@ -18,19 +20,29 @@ const SURFACES: Array<{ surface: string; pattern: RegExp; signal: string }> = [
 ];
 
 export function buildDocsMap(state: OzAgentState): DocsMapItem[] {
-  const items: DocsMapItem[] = [];
+  const byUrl = new Map<string, { surfaces: Set<string>; signals: Set<string>; confidence: number }>();
   for (const page of state.discovery.selectedDocs) {
     for (const surface of SURFACES) {
       if (!surface.pattern.test(`${page.url}\n${page.title}\n${page.text}`)) continue;
-      items.push({
-        surface: surface.surface,
-        sourceUrl: page.url,
-        signal: surface.signal,
-        confidence: 0.72,
-      });
+      const item = byUrl.get(page.url) ?? { surfaces: new Set<string>(), signals: new Set<string>(), confidence: 0.72 };
+      item.surfaces.add(surface.surface);
+      item.signals.add(surface.signal);
+      item.confidence = Math.max(item.confidence, 0.72);
+      byUrl.set(page.url, item);
     }
   }
-  return items;
+  return [...byUrl.entries()].map(([sourceUrl, item]) => {
+    const surfaces = [...item.surfaces];
+    const signals = [...item.signals];
+    return {
+      surface: surfaces.join(", "),
+      surfaces,
+      sourceUrl,
+      signal: signals.join(", "),
+      signals,
+      confidence: item.confidence,
+    };
+  });
 }
 
 export async function runDocsMapperAgent(state: OzAgentState): Promise<{ state: OzAgentState; docsMap: DocsMapItem[] }> {

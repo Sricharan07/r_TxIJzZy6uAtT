@@ -1,5 +1,5 @@
 import { currentUserId } from "../../../../../../lib/auth";
-import { approveOzJob, requireOwnedOzJob, runOzSuite, startOzDiscovery } from "../../../../../../lib/oz";
+import { OzRunBlockedError, requireOwnedOzJob, runOzSuite, startOzDiscovery } from "../../../../../../lib/oz";
 import { getStore } from "@kiln/shared/store";
 
 export const runtime = "nodejs";
@@ -20,14 +20,16 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       return Response.json({ job: await requireOwnedOzJob(id, userId) });
     }
     if (job.status === "awaiting_approval") {
-      if ((job.state.verification?.missingSecrets.length ?? 0) > 0) {
-        return Response.json({ error: "Autopilot is blocked by missing required secrets." }, { status: 409 });
-      }
-      await approveOzJob(id, userId);
       return Response.json({ job: await runOzSuite(id, userId, {}) });
     }
     return Response.json({ job: await requireOwnedOzJob(id, userId) });
   } catch (err) {
+    if (err instanceof OzRunBlockedError) {
+      return Response.json(
+        { error: err.message, blockers: err.blockers, missingSecrets: err.missingSecrets },
+        { status: err.statusCode },
+      );
+    }
     return Response.json({ error: err instanceof Error ? err.message : "Could not enable autopilot" }, { status: 400 });
   }
 }

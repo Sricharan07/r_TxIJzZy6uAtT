@@ -2,8 +2,21 @@ import { buildOzReport, observeRunEvent, OzOrchestrator, scenarioToEvalConfig } 
 import type { AgentType, OzJob, OzMode, OzScenario, OzSuiteDraft } from "@kiln/shared";
 import { getStore } from "@kiln/shared/store";
 import { createRunsForEval, enqueueRun } from "./jobs";
+import { getRunInfrastructureHealth } from "./system-health";
 
 const globalOz = globalThis as typeof globalThis & { __ozActiveJobs?: Set<string> };
+
+export class OzRunBlockedError extends Error {
+  statusCode = 409;
+
+  constructor(
+    message: string,
+    readonly blockers: string[],
+    readonly missingSecrets: string[] = [],
+  ) {
+    super(message);
+  }
+}
 
 function activeJobs(): Set<string> {
   globalOz.__ozActiveJobs ??= new Set<string>();
@@ -65,6 +78,40 @@ function missingSecretsFor(job: OzJob): string[] {
   return (job.state.productProfile?.requiredEnv ?? [])
     .filter((env) => env.required !== false && !process.env[env.name])
     .map((env) => env.name);
+}
+
+async function refreshVerification(job: OzJob): Promise<OzJob> {
+  if (!job.state.verification) return job;
+  const missingSecrets = missingSecretsFor(job);
+  const current = job.state.verification.missingSecrets;
+  if (current.length === missingSecrets.length && current.every((name, index) => name === missingSecrets[index])) return job;
+  const next: OzJob = {
+    ...job,
+    state: {
+      ...job.state,
+      verification: {
+        ...job.state.verification,
+        missingSecrets,
+      },
+    },
+  };
+  await getStore().saveOzJob(next);
+  return (await getStore().getOzJob(job.id)) ?? next;
+}
+
+async function assertRunReadiness(job: OzJob): Promise<void> {
+  const missingSecrets = missingSecretsFor(job);
+  const blockers: string[] = [];
+  if (missingSecrets.length > 0) {
+    blockers.push(`Missing required product secrets: ${missingSecrets.join(", ")}`);
+  }
+  if (missingSecrets.length === 0) {
+    const health = await getRunInfrastructureHealth();
+    blockers.push(...health.blockers);
+  }
+  if (blockers.length > 0) {
+    throw new OzRunBlockedError(blockers.join(" "), blockers, missingSecrets);
+  }
 }
 
 function requireValidSuite(suiteDraft: OzSuiteDraft | undefined): OzSuiteDraft {
@@ -142,7 +189,7 @@ export async function requireOwnedOzJob(jobId: string, userId: string): Promise<
 }
 
 export async function refreshOwnedOzJob(jobId: string, userId: string): Promise<OzJob> {
-  const job = await requireOwnedOzJob(jobId, userId);
+  const job = await refreshVerification(await requireOwnedOzJob(jobId, userId));
   await maybeRefreshOzRunReport(job);
   const refreshed = await getStore().getOzJob(jobId);
   return refreshed ?? job;
@@ -288,10 +335,20 @@ export async function runOzSuite(
   userId: string,
   options: { scenarioId?: string; agentType?: AgentType; requestedRuns?: number },
 ): Promise<OzJob> {
-  const job = await requireOwnedOzJob(jobId, userId);
+  let job = await requireOwnedOzJob(jobId, userId);
   const suiteDraft = requireValidSuite(job.state.suiteDraft);
-  if (job.state.approval?.status !== "approved" && job.mode !== "autopilot") {
-    throw new Error("Suite must be approved before running.");
+  if (job.status === "running") throw new Error("Suite is already running.");
+  if (job.status === "complete") throw new Error("Suite has already completed.");
+  if (job.status === "stopped") throw new Error("Stopped jobs cannot be run. Start a new Oz job.");
+  if (job.state.approval?.status !== "approved") {
+    if (job.status !== "awaiting_approval" && job.status !== "blocked" && job.mode !== "autopilot") {
+      throw new Error("Suite must be approved before running.");
+    }
+    requireValidSuite(job.state.suiteDraft);
+  }
+  await assertRunReadiness(job);
+  if (job.state.approval?.status !== "approved") {
+    job = await approveOzJob(job.id, userId);
   }
   const scenarios = options.scenarioId
     ? suiteDraft.scenarios.filter((scenario) => scenario.id === options.scenarioId)
@@ -346,7 +403,7 @@ export async function stopOzJob(jobId: string, userId: string): Promise<OzJob> {
   await getStore().stopRuns(runIds, "Stopped by user before completion.");
   const next: OzJob = {
     ...job,
-    status: "failed",
+    status: "stopped",
     state: {
       ...job.state,
       error: "Stopped by user before completion.",
@@ -357,8 +414,8 @@ export async function stopOzJob(jobId: string, userId: string): Promise<OzJob> {
   await getStore().saveOzJob(next);
   await getStore().appendOzEvent({
     jobId,
-    kind: "job.failed",
-    phase: "failed",
+    kind: "job.stopped",
+    phase: "stopped",
     message: "Stopped by user.",
     dedupeKey: `${jobId}:user-stop`,
     payload: { severity: "warning" },
@@ -381,6 +438,7 @@ export async function deleteOzJob(jobId: string, userId: string, options: { stop
 }
 
 export async function maybeRefreshOzRunReport(job: OzJob): Promise<void> {
+  if (job.status === "stopped") return;
   const runIds = job.state.run?.runIds ?? [];
   if (runIds.length === 0) return;
   const runs = (await Promise.all(runIds.map((runId) => getStore().getRun(runId)))).filter((run) => run !== null);

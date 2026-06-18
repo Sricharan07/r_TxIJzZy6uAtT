@@ -4,7 +4,7 @@ import { refreshOwnedOzJob } from "../../../../../../lib/oz";
 
 export const runtime = "nodejs";
 
-const TERMINAL = new Set(["awaiting_approval", "blocked", "failed", "complete"]);
+const TERMINAL = new Set(["awaiting_approval", "blocked", "failed", "complete", "stopped"]);
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS runs (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   eval_id       UUID NOT NULL REFERENCES evals(id),
   agent_type    TEXT NOT NULL,
-  status        TEXT NOT NULL DEFAULT 'pending', -- pending|running|completed|errored
+  status        TEXT NOT NULL DEFAULT 'pending', -- pending|running|completed|errored|canceled
   error_type    TEXT,                            -- null|platform|timeout (Decision 18)
   started_at    TIMESTAMPTZ,
   finished_at   TIMESTAMPTZ,
@@ -106,6 +106,18 @@ CREATE TABLE IF NOT EXISTS oz_feedback_events (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS service_heartbeats (
+  service_id    TEXT PRIMARY KEY,
+  service_type  TEXT NOT NULL,
+  status        TEXT NOT NULL,
+  last_seen_at  TIMESTAMPTZ NOT NULL,
+  version       TEXT,
+  queue_name    TEXT,
+  concurrency   INTEGER,
+  sandbox_mode  TEXT,
+  metadata      JSONB
+);
+
 ALTER TABLE verdicts ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 ALTER TABLE verdicts ADD COLUMN IF NOT EXISTS evidence JSONB;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS grade_report JSONB;
@@ -139,6 +151,7 @@ CREATE INDEX IF NOT EXISTS idx_oz_events_job ON oz_events(job_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_oz_events_job_seq ON oz_events(job_id, event_seq);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_oz_events_dedupe ON oz_events(job_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_oz_artifacts_job ON oz_artifacts(job_id);
+CREATE INDEX IF NOT EXISTS idx_service_heartbeats_type_seen ON service_heartbeats(service_type, last_seen_at);
 	`;
 
 export interface UserRow {
@@ -223,4 +236,16 @@ export interface OzArtifactRow {
   data: unknown | null;
   blob_url: string | null;
   created_at: string;
+}
+
+export interface ServiceHeartbeatRow {
+  service_id: string;
+  service_type: string;
+  status: string;
+  last_seen_at: string;
+  version: string | null;
+  queue_name: string | null;
+  concurrency: number | null;
+  sandbox_mode: string | null;
+  metadata: unknown | null;
 }

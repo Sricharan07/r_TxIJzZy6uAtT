@@ -24,6 +24,12 @@ export interface OzOrchestratorOptions {
   fetchImpl?: typeof fetch;
 }
 
+class OzJobStoppedError extends Error {
+  constructor() {
+    super("Oz job was stopped.");
+  }
+}
+
 function initialState(input: CreateOzJobInput, jobId = randomUUID()): OzAgentState {
   return {
     jobId,
@@ -119,6 +125,7 @@ export class OzOrchestrator {
       );
       return job;
     } catch (err) {
+      if (err instanceof OzJobStoppedError) return this.requireJob(jobId);
       job = await this.setStatus(job, "failed");
       await this.emit(job, "job.failed", err instanceof Error ? err.message : String(err));
       throw err;
@@ -141,11 +148,15 @@ export class OzOrchestrator {
   }
 
   private async save(job: OzJob): Promise<OzJob> {
+    const current = await this.requireJob(job.id);
+    if (current.status === "stopped") throw new OzJobStoppedError();
     await this.options.store.saveOzJob(job);
     return (await this.requireJob(job.id));
   }
 
   private async setStatus(job: OzJob, status: OzJobStatus): Promise<OzJob> {
+    const current = await this.requireJob(job.id);
+    if (current.status === "stopped") throw new OzJobStoppedError();
     const next = { ...job, status, state: { ...job.state } };
     await this.options.store.saveOzJob(next);
     return this.requireJob(job.id);

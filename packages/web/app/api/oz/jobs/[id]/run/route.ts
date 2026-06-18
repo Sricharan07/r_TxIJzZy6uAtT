@@ -1,6 +1,6 @@
 import type { AgentType } from "@kiln/shared";
 import { currentUserId } from "../../../../../../lib/auth";
-import { approveOzJob, runOzSuite } from "../../../../../../lib/oz";
+import { OzRunBlockedError, runOzSuite } from "../../../../../../lib/oz";
 
 export const runtime = "nodejs";
 
@@ -19,7 +19,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   try {
     const { id } = await params;
-    await approveOzJob(id, userId);
     const job = await runOzSuite(id, userId, {
       scenarioId: typeof body.scenarioId === "string" ? body.scenarioId : undefined,
       agentType: isAgent(body.agentType) ? body.agentType : undefined,
@@ -27,6 +26,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
     return Response.json({ job });
   } catch (err) {
+    if (err instanceof OzRunBlockedError) {
+      return Response.json(
+        { error: err.message, blockers: err.blockers, missingSecrets: err.missingSecrets },
+        { status: err.statusCode },
+      );
+    }
     return Response.json({ error: err instanceof Error ? err.message : "Could not run suite" }, { status: 400 });
   }
 }

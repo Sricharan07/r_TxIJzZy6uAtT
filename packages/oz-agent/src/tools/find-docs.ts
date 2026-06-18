@@ -78,7 +78,8 @@ export const findDocsTool: OzTool<FindDocsInput, { homepageUrl: string; candidat
       .filter((url) => scoreText(url, DOC_PATTERNS) > 0)
       .slice(0, 20)
       .map((url) => candidateFromUrl(url, "sitemap", "Found in sitemap.xml."));
-    const candidates = strongestCandidatePerUrl([...linked, ...sitemap, ...commonPaths])
+    const submitted = candidateFromUrl(homepageUrl, "link", "Submitted URL.");
+    const candidates = strongestCandidatePerUrl([submitted, ...linked, ...sitemap, ...commonPaths])
       .sort((a, b) => b.confidence - a.confidence)
       .slice(0, 12);
     return { homepageUrl, candidates };

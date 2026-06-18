@@ -3,6 +3,7 @@ import type { RunResult } from "@kiln/shared";
 import { JsonKilnStore } from "@kiln/shared/store";
 import { OzOrchestrator } from "./orchestrator";
 import { buildOzReport, observeRunEvent } from "./index";
+import { buildDocsMap } from "./agents/docs-mapper-agent";
 
 function response(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html" } });
@@ -87,6 +88,31 @@ describe("OzOrchestrator", () => {
     expect(event.dedupeKey).toBe("run-1:0");
     expect(event.message.length).toBeLessThan(540);
     expect(event.payload).not.toHaveProperty("sourceEvent");
+  });
+
+  it("groups docs map surfaces by source URL", () => {
+    const docsMap = buildDocsMap({
+      jobId: "job-1",
+      userId: "user-1",
+      input: { productUrl: "https://acme.test/docs", mode: "copilot" },
+      discovery: {
+        docsCandidates: [],
+        selectedDocs: [{
+          url: "https://acme.test/docs",
+          title: "Acme Docs",
+          text: "Quickstart authentication bearer token SDK npm install API reference example",
+          links: [],
+          fetchedAt: "2026-01-01T00:00:00.000Z",
+        }],
+        githubRepos: [],
+        packages: [],
+        codeExamples: [],
+      },
+    });
+
+    expect(docsMap).toHaveLength(1);
+    expect(docsMap[0]?.sourceUrl).toBe("https://acme.test/docs");
+    expect(docsMap[0]?.surfaces).toEqual(expect.arrayContaining(["Quickstart", "Authentication", "SDK reference"]));
   });
 
   it("reports platform failures as inconclusive instead of product DX findings", () => {

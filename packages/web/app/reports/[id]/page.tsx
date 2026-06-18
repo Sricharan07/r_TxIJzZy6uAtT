@@ -86,6 +86,10 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
     );
   }
 
+  if (run.status === "canceled") {
+    return <CanceledRun run={run} />;
+  }
+
   // Platform/infra failure gets its own treatment, never blamed on the API (Decision 18).
   if (run.errorType !== null) {
     return <PlatformError run={run} />;
@@ -370,6 +374,36 @@ function FindingRow({ finding }: { finding: Finding }) {
           <pre className="customer-excerpt">{evidence.customerExcerpt}</pre>
         </div>
       ))}
+    </div>
+  );
+}
+
+function CanceledRun({ run }: { run: RunResult }) {
+  return (
+    <div>
+      <div className="report-sticky">
+        <div className="report-sticky-left">
+          <span className="badge badge-error">STOPPED</span>
+          <span className="report-title">{run.evalTitle}</span>
+        </div>
+      </div>
+      <div className="platform-error">
+        <span className="badge badge-error" style={{ fontSize: "13px" }}>
+          Stopped by user
+        </span>
+        <h3>Run stopped before completion</h3>
+        <p>
+          This run was canceled before Oz could produce a product signal. It is not counted as a product failure or a platform failure.
+        </p>
+        <div style={{ display: "flex", gap: "8px", justifyContent: "center" }}>
+          <Link className="btn btn-primary" href={`/evals/new?from=${run.evalId}`}>
+            Start again
+          </Link>
+          <Link className="btn btn-ghost" href={`/api/events?runId=${run.id}`}>
+            View partial trace
+          </Link>
+        </div>
+      </div>
     </div>
   );
 }

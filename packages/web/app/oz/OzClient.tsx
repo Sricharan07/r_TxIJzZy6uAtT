@@ -29,6 +29,14 @@ interface ActionResponse {
   job?: OzJob;
   ok?: boolean;
   error?: string;
+  blockers?: string[];
+  missingSecrets?: string[];
+}
+
+interface RunInfrastructureHealth {
+  ok: boolean;
+  checks: Array<{ name: string; ok: boolean; message: string; checkedAt: string }>;
+  blockers: string[];
 }
 
 const MODE_LABELS: Array<{ mode: OzMode; label: string; detail: string }> = [
@@ -47,7 +55,7 @@ const PHASES: Array<{ status: OzJob["status"]; label: string }> = [
   { status: "complete", label: "Report" },
 ];
 
-const TERMINAL = new Set<OzJob["status"]>(["awaiting_approval", "blocked", "failed", "complete"]);
+const TERMINAL = new Set<OzJob["status"]>(["awaiting_approval", "blocked", "failed", "complete", "stopped"]);
 
 function confidence(n?: number): string {
   return `${Math.round((n ?? 0) * 100)}%`;
@@ -89,6 +97,7 @@ function phaseIndexForStatus(status: OzJob["status"]): number {
   const explicit = PHASES.findIndex((item) => item.status === status);
   if (explicit >= 0) return explicit;
   if (status === "blocked") return PHASES.findIndex((item) => item.status === "awaiting_approval");
+  if (status === "stopped") return PHASES.findIndex((item) => item.status === "running");
   if (status === "failed") return PHASES.findIndex((item) => item.status === "running");
   return 0;
 }
@@ -112,6 +121,8 @@ function OzPageInner() {
   const [draftSuite, setDraftSuite] = useState<OzSuiteDraft | null>(null);
   const [streamVersion, setStreamVersion] = useState(0);
   const [loadingJob, setLoadingJob] = useState(false);
+  const [infraHealth, setInfraHealth] = useState<RunInfrastructureHealth | null>(null);
+  const [runBlockers, setRunBlockers] = useState<string[]>([]);
   const live = job ? !TERMINAL.has(job.status) : false;
 
   async function load(id: string): Promise<string | null> {
@@ -129,6 +140,7 @@ function OzPageInner() {
     setEvents(nextEvents);
     setVisibleEvents(nextEvents.slice(-80));
     setEventQueue([]);
+    setRunBlockers([]);
     return eventsBody.cursor ?? nextEvents.at(-1)?.id ?? null;
   }
 
@@ -197,9 +209,37 @@ function OzPageInner() {
     return () => clearInterval(id);
   }, [eventQueue.length]);
 
+  useEffect(() => {
+    if (!job || (job.status !== "awaiting_approval" && job.status !== "running")) return;
+    let cancelled = false;
+    const refreshHealth = async () => {
+      try {
+        const response = await fetch("/api/system/health");
+        const health = (await response.json()) as RunInfrastructureHealth;
+        if (!cancelled) setInfraHealth(health);
+      } catch {
+        if (!cancelled) {
+          setInfraHealth({
+            ok: false,
+            checks: [],
+            blockers: ["system: Could not load run infrastructure health."],
+          });
+        }
+      }
+    };
+    void refreshHealth();
+    const timer = setInterval(refreshHealth, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [job?.id, job?.status]);
+
   const docsMap = useMemo(() => {
     const artifact = artifacts.find((item) => item.type === "docs_map");
-    return Array.isArray(artifact?.data) ? artifact.data as Array<{ surface: string; sourceUrl: string; signal: string; confidence: number }> : [];
+    return Array.isArray(artifact?.data)
+      ? artifact.data as Array<{ surface: string; surfaces?: string[]; sourceUrl: string; signal: string; signals?: string[]; confidence: number }>
+      : [];
   }, [artifacts]);
   const currentPhase = job ? phaseIndexForStatus(job.status) : 0;
   const latestEvent = visibleEvents.at(-1);
@@ -207,6 +247,15 @@ function OzPageInner() {
   const scenarioCount = draftSuite?.scenarios.length ?? 0;
   const runCount = job?.state.run?.runIds.length ?? 0;
   const requiredSecrets = job?.state.productProfile?.requiredEnv.length ?? 0;
+  const missingSecrets = job?.state.verification?.missingSecrets ?? [];
+  const currentRunBlockers = runBlockers.length > 0 ? runBlockers : infraHealth && !infraHealth.ok ? infraHealth.blockers : [];
+  const canRunSuite = Boolean(
+    job?.status === "awaiting_approval"
+      && draftSuite?.scenarios.length
+      && missingSecrets.length === 0
+      && !(infraHealth && !infraHealth.ok)
+      && !busy,
+  );
 
   async function startJob() {
     if (mode === "manual") {
@@ -215,6 +264,7 @@ function OzPageInner() {
     }
     setBusy(true);
     setError(null);
+    setRunBlockers([]);
     setAuthRequired(false);
     try {
       const res = await fetch("/api/oz/jobs", {
@@ -239,14 +289,18 @@ function OzPageInner() {
     if (!job) return;
     setBusy(true);
     setError(null);
+    setRunBlockers([]);
     try {
       const res = await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body ?? {}),
       });
-      const data = (await res.json()) as JobResponse;
-      if (!res.ok) throw new Error(data.error ?? "Oz request failed.");
+      const data = (await res.json()) as JobResponse & ActionResponse;
+      if (!res.ok) {
+        setRunBlockers(data.blockers ?? []);
+        throw new Error(data.error ?? "Oz request failed.");
+      }
       await load(job.id);
       setStreamVersion((version) => version + 1);
     } catch (err) {
@@ -260,6 +314,7 @@ function OzPageInner() {
     if (!job) return;
     setBusy(true);
     setError(null);
+    setRunBlockers([]);
     try {
       const res = await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}/stop`, { method: "POST" });
       const data = (await res.json()) as ActionResponse;
@@ -280,6 +335,8 @@ function OzPageInner() {
     setEventQueue([]);
     setArtifacts([]);
     setDraftSuite(null);
+    setInfraHealth(null);
+    setRunBlockers([]);
     router.push("/oz");
   }
 
@@ -368,7 +425,7 @@ function OzPageInner() {
                   <strong>Workspace access</strong>
                   <span>Sign in so jobs, runs, and reports are tied to your account.</span>
                 </div>
-                <Link className="btn btn-primary github-btn" href="/auth/github">
+                <Link className="btn btn-primary github-btn" href="/auth/github?returnTo=/oz">
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
                     <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.62 2.29 6.69 5.47 7.78.4.08.55-.18.55-.39 0-.19-.01-.84-.01-1.52-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.03 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.37 7.37 0 0 1 8 4.02c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.13-1.87 3.82-3.65 4.03.29.26.54.75.54 1.52 0 1.09-.01 1.97-.01 2.24 0 .21.15.47.55.39A8.1 8.1 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z" />
                   </svg>
@@ -400,7 +457,7 @@ function OzPageInner() {
               {authRequired && (
                 <div className="oz-auth-error">
                   <span>GitHub sign-in is required before Oz can create a job.</span>
-                  <Link className="btn btn-primary github-btn" href="/auth/github">Continue with GitHub</Link>
+                  <Link className="btn btn-primary github-btn" href="/auth/github?returnTo=/oz">Continue with GitHub</Link>
                 </div>
               )}
               {error && <p className="form-error">{error}</p>}
@@ -429,7 +486,7 @@ function OzPageInner() {
         </div>
         <div className="oz-header-actions">
           <span className={`oz-live-pill${live ? " active" : ""}`}><span />{live ? "Live" : "Idle"}</span>
-          {job && live && <button className="btn btn-ghost" disabled={busy} onClick={stopJob}>{busy ? "Stopping..." : "Stop"}</button>}
+          {job.status === "running" && <button className="btn btn-ghost" disabled={busy} onClick={stopJob}>{busy ? "Stopping..." : "Stop"}</button>}
           {job && <button className="btn btn-danger" disabled={busy} onClick={() => void deleteJob("TERMINATE")}>Terminate</button>}
           {job && <button className="btn btn-ghost danger-text" disabled={busy} onClick={() => void deleteJob("DELETE")}>Delete</button>}
           <Link className="btn btn-ghost" href="/oz">New Oz Job</Link>
@@ -526,8 +583,8 @@ function OzPageInner() {
           <div className="oz-docs-map">
             {docsMap.map((item) => (
               <div key={`${item.surface}-${item.sourceUrl}`} className="oz-doc-row">
-                <strong>{item.surface}</strong>
-                <span>{item.signal}</span>
+                <strong>{item.surfaces?.join(", ") ?? item.surface}</strong>
+                <span>{item.signals?.join(", ") ?? item.signal}</span>
                 <a href={item.sourceUrl} target="_blank" rel="noreferrer">{new URL(item.sourceUrl).pathname || item.sourceUrl}</a>
               </div>
             ))}
@@ -581,22 +638,44 @@ function OzPageInner() {
               </article>
             ))}
           </div>
-          <div className="oz-approval">
-            <div>
-              <strong>Oz is ready to run.</strong>
-              <p>{job?.state.verification?.missingSecrets.length ? `Missing secrets: ${job.state.verification.missingSecrets.join(", ")}` : "Estimated risk: low"}</p>
+          {job.status === "awaiting_approval" && (
+            <div className={`oz-approval${missingSecrets.length || currentRunBlockers.length ? " blocked" : ""}`}>
+              <div>
+                <strong>{missingSecrets.length || currentRunBlockers.length ? "Resolve blockers before running." : "Oz is ready to run."}</strong>
+                <p>
+                  {missingSecrets.length
+                    ? `Missing secrets: ${missingSecrets.join(", ")}`
+                    : currentRunBlockers.length
+                      ? currentRunBlockers.join(" ")
+                      : "Estimated risk: low"}
+                </p>
+              </div>
+              <button className="btn btn-primary" disabled={!canRunSuite} onClick={() => post("/run", { agentType: "claude-code", requestedRuns: 1 })}>
+                {busy ? "Working..." : "Run test suite"}
+              </button>
             </div>
-            <button className="btn btn-primary" disabled={busy || !draftSuite.scenarios.length} onClick={() => post("/run", { agentType: "claude-code", requestedRuns: 1 })}>
-              {busy ? "Working..." : "Run test suite"}
-            </button>
-          </div>
+          )}
         </section>
       )}
 
       {job?.state.run?.runIds.length ? (
         <section className="oz-panel">
-          <h2>Live run</h2>
-          <p>Oz is watching {job.state.run.runIds.length} run{job.state.run.runIds.length === 1 ? "" : "s"}.</p>
+          <div className="oz-panel-header">
+            <h2>{job.status === "stopped" ? "Stopped run" : job.status === "complete" ? "Run reports" : "Live run"}</h2>
+            <span className="badge">{job.state.run.runIds.length} run{job.state.run.runIds.length === 1 ? "" : "s"}</span>
+          </div>
+          <p>
+            {job.status === "stopped"
+              ? "The queued or active runs were canceled and will not produce a product grade."
+              : job.status === "running"
+                ? "Oz is watching the run queue, agent trace, and report links."
+                : "These reports are ready to inspect."}
+          </p>
+          {job.status === "running" && infraHealth && !infraHealth.ok && (
+            <div className="oz-run-blockers">
+              {infraHealth.blockers.map((blocker) => <span key={blocker}>{blocker}</span>)}
+            </div>
+          )}
           <div className="oz-run-links">
             {job.state.run.runIds.map((runId) => (
               <Link key={runId} className="tmpl-btn" href={`/reports/${runId}`}>Report {runId.slice(0, 8)}</Link>

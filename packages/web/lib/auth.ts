@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
+import type { User } from "@kiln/shared";
 import { getStore } from "@kiln/shared/store";
 
 const SESSION_COOKIE = "id";
@@ -43,12 +44,17 @@ export async function clearCurrentSession(): Promise<void> {
 
 /** Return the authenticated user, or a seeded identity only in local development. */
 export async function currentUserId(): Promise<string | null> {
+  return (await currentUser())?.id ?? null;
+}
+
+export async function currentUser(): Promise<User | null> {
   const store = getStore();
   const sessionToken = (await cookies()).get(SESSION_COOKIE)?.value;
   if (sessionToken) {
     const userId = await store.getSessionUserId(hashSessionToken(sessionToken));
-    if (userId && (await store.getUser(userId))) return userId;
+    const user = userId ? await store.getUser(userId) : null;
+    if (user) return user;
   }
   if (requireGitHubAuth()) return null;
-  return (await store.getOrCreateDevUser()).id;
+  return store.getOrCreateDevUser();
 }

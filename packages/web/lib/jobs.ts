@@ -34,6 +34,8 @@ function redisConnection() {
 }
 
 async function saveStatus(run: RunResult, status: RunResult["status"]): Promise<void> {
+  const current = await getStore().getRun(run.id);
+  if (current?.status === "canceled") return;
   await getStore().saveRun({
     ...run,
     status,
@@ -42,6 +44,8 @@ async function saveStatus(run: RunResult, status: RunResult["status"]): Promise<
 }
 
 async function savePlatformError(run: RunResult, err: unknown): Promise<void> {
+  const current = await getStore().getRun(run.id);
+  if (current?.status === "canceled") return;
   await getStore().saveRun({
     ...run,
     status: "errored",
@@ -134,6 +138,8 @@ export async function enqueueRun(evalRecord: Eval, run: RunResult): Promise<void
     try {
       const runnerSpecifier = "@kiln/runner";
       const { executeRun } = (await import(runnerSpecifier)) as { executeRun: ExecuteRun };
+      const existing = await getStore().getRun(run.id);
+      if (existing?.status === "canceled") return;
       await saveStatus(run, "running");
       const result = await executeRun(evalRecord.config, {
         runId: run.id,
@@ -141,10 +147,12 @@ export async function enqueueRun(evalRecord: Eval, run: RunResult): Promise<void
         evalTitle: run.evalTitle,
         async onEvent(event) {
           const current = await getStore().getRun(run.id);
-          if (!current) return;
+          if (!current || current.status === "canceled") throw new Error("Run was canceled.");
           await getStore().saveRun({ ...current, events: [...current.events, event] });
         },
       });
+      const latest = await getStore().getRun(run.id);
+      if (latest?.status === "canceled") return;
       await getStore().saveRun(result);
       await refreshEvalGradeReports(evalRecord);
     } catch (err) {

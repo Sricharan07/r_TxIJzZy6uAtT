@@ -39,17 +39,21 @@ function recommendedFixes(state: OzAgentState, findings: ReturnType<typeof analy
 
 export function buildOzReport(state: OzAgentState, runs: RunResult[]): OzReport {
   const evidence = state.productProfile?.evidence ?? [];
-  const findings = runs.flatMap((run) => analyzeRunFailure(run, evidence));
-  const passed = runs.filter((run) => run.status === "completed" && run.verdicts.every((verdict) => verdict.passed)).length;
+  const reportableRuns = runs.filter((run) => run.status !== "canceled");
+  const rawFindings = reportableRuns.flatMap((run) => analyzeRunFailure(run, evidence));
+  const findings = [...new Map(rawFindings.map((finding) => [finding.code, finding])).values()];
+  const passed = reportableRuns.filter((run) => run.status === "completed" && run.verdicts.every((verdict) => verdict.passed)).length;
   const platformFindings = findings.filter((finding) =>
     finding.code.startsWith("platform_") || finding.code === "agent_cli_failure" || finding.code === "sandbox_failure",
   ).length;
   const summary =
-    runs.length === 0
+    runs.length > 0 && reportableRuns.length === 0
+      ? "Oz stopped the run before completion. No product result was produced."
+      : reportableRuns.length === 0
       ? "Oz generated an agent-readiness suite. No runs have completed yet."
       : platformFindings === findings.length && findings.length > 0
-        ? `${passed}/${runs.length} agent run${runs.length === 1 ? "" : "s"} passed. The product result is inconclusive because the harness produced ${findings.length} platform finding${findings.length === 1 ? "" : "s"}.`
-      : `${passed}/${runs.length} agent run${runs.length === 1 ? "" : "s"} passed. Oz produced ${findings.length} DX finding${findings.length === 1 ? "" : "s"}.`;
+        ? `${passed}/${reportableRuns.length} agent run${reportableRuns.length === 1 ? "" : "s"} passed. The product result is inconclusive because the harness produced ${findings.length} platform finding${findings.length === 1 ? "" : "s"}.`
+      : `${passed}/${reportableRuns.length} agent run${reportableRuns.length === 1 ? "" : "s"} passed. Oz produced ${findings.length} DX finding${findings.length === 1 ? "" : "s"}.`;
   return {
     summary,
     findings,

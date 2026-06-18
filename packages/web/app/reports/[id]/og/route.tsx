@@ -31,6 +31,7 @@ const GREEN = "#22c55e";
 const YELLOW = "#f59e0b";
 
 function failureSummary(run: RunResult): string {
+  if (run.status === "canceled") return "Run was stopped before completion.";
   if (run.errorType !== null) return "Run stopped due to a platform issue.";
   const finding = run.gradeReport?.findings[0];
   if (finding) return finding.evidence[0]?.customerExcerpt ?? finding.title;
@@ -75,11 +76,13 @@ export async function GET(
   const failed = total - passed;
   const grade = run.gradeReport?.score.letter;
   const reportPassed = run.gradeReport?.taskPassed ?? ok;
-  const badgeColor = run.errorType !== null ? YELLOW : reportPassed ? GREEN : RED;
-  const badgeLabel = run.errorType !== null ? "PLATFORM ERROR" : grade ? `GRADE ${grade}` : ok ? "PASSED" : "FAILED";
+  const badgeColor = run.status === "canceled" || run.errorType !== null ? YELLOW : reportPassed ? GREEN : RED;
+  const badgeLabel = run.status === "canceled" ? "STOPPED" : run.errorType !== null ? "PLATFORM ERROR" : grade ? `GRADE ${grade}` : ok ? "PASSED" : "FAILED";
   const duration = formatDuration(run.durationSec);
   const subtitle =
-    run.errorType !== null
+    run.status === "canceled"
+      ? `Run stopped · ${run.agentType} · ${duration}`
+      : run.errorType !== null
       ? `Run interrupted · ${run.agentType} · ${duration}`
       : run.gradeReport
       ? `${Math.round(run.gradeReport.score.passRate * 100)}% pass rate · ${run.agentType} · ${duration}`

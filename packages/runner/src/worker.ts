@@ -11,6 +11,8 @@
  * module imports and runs cleanly WITHOUT Redis. The actual work lives in the
  * pure {@link executeRun} function, which is fully exercisable in-process.
  */
+import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
 import {
   aggregateCompletedRunReports,
   type AgentEvent,
@@ -54,6 +56,9 @@ interface RunJob {
   runId: string;
 }
 
+const RUNNER_SERVICE_ID = process.env.KILN_RUNNER_ID ?? `runner-${hostname()}-${process.pid}-${randomUUID()}`;
+const HEARTBEAT_INTERVAL_MS = 5_000;
+
 function runCountForEval(config: EvalConfig): number {
   const requested = config.metadata.requestedRuns;
   if (requested !== undefined) return Math.min(10, Math.max(1, Math.floor(requested)));
@@ -65,6 +70,38 @@ function queueLockDurationMs(): number {
   if (Number.isFinite(configured) && configured > 0) return configured;
   const maxRunSec = Number(process.env.KILN_RUNNER_MAX_TIMEOUT_SEC ?? 3_600);
   return Math.ceil((Number.isFinite(maxRunSec) && maxRunSec > 0 ? maxRunSec : 3_600) * 1_000 + 120_000);
+}
+
+function heartbeatPayload() {
+  return {
+    serviceId: RUNNER_SERVICE_ID,
+    serviceType: "runner" as const,
+    status: "online" as const,
+    lastSeenAt: new Date().toISOString(),
+    version: process.env.KILN_VERSION,
+    queueName: "kiln-runs",
+    concurrency: Number(process.env.KILN_RUNNER_CONCURRENCY ?? 1),
+    sandboxMode: process.env.KILN_SANDBOX_MODE ?? (process.env.NODE_ENV === "production" ? "firecracker" : "local"),
+    metadata: {
+      pid: process.pid,
+      host: hostname(),
+    },
+  };
+}
+
+async function writeRunnerHeartbeat(): Promise<void> {
+  await getStore().upsertServiceHeartbeat(heartbeatPayload());
+}
+
+function startRunnerHeartbeat(): void {
+  void writeRunnerHeartbeat().catch((err) => {
+    console.error("Runner heartbeat failed", err);
+  });
+  setInterval(() => {
+    void writeRunnerHeartbeat().catch((err) => {
+      console.error("Runner heartbeat failed", err);
+    });
+  }, HEARTBEAT_INTERVAL_MS);
 }
 
 async function refreshEvalGradeReports(evalRecord: Eval): Promise<void> {
@@ -544,8 +581,9 @@ export async function executeRun(
  */
 export async function startWorker(): Promise<void> {
   if (process.env.RUNNER_ENABLE_QUEUE !== "1") {
-    // Queue disabled: nothing to connect to. The worker is a no-op so the
-    // service can boot in environments without Redis.
+    if (process.env.NODE_ENV === "production" || process.env.KILN_QUEUE_MODE === "redis") {
+      throw new Error("RUNNER_ENABLE_QUEUE=1 is required for the production runner service.");
+    }
     return;
   }
 
@@ -566,6 +604,8 @@ export async function startWorker(): Promise<void> {
       if (!evalRecord || !existingRun) {
         throw new Error(`Missing eval/run for job ${job.id}`);
       }
+      if (existingRun.status === "canceled") return existingRun;
+      if (existingRun.status !== "pending" && existingRun.status !== "running") return existingRun;
       await store.saveRun({ ...existingRun, status: "running", startedAt: new Date().toISOString() });
       const result = await executeRun(evalRecord.config, {
         runId: existingRun.id,
@@ -573,10 +613,12 @@ export async function startWorker(): Promise<void> {
         evalTitle: existingRun.evalTitle,
         async onEvent(event) {
           const current = await store.getRun(existingRun.id);
-          if (!current) return;
+          if (!current || current.status === "canceled") throw new Error("Run was canceled.");
           await store.saveRun({ ...current, events: [...current.events, event] });
         },
       });
+      const latest = await store.getRun(existingRun.id);
+      if (latest?.status === "canceled") return latest;
       await store.saveRun(result);
       await refreshEvalGradeReports(evalRecord);
       return result;
@@ -589,4 +631,5 @@ export async function startWorker(): Promise<void> {
     },
   );
   await worker.waitUntilReady();
+  startRunnerHeartbeat();
 }
