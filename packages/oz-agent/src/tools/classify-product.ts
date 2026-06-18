@@ -39,6 +39,7 @@ function titleName(page: OzCrawledPage | undefined, fallback: string): string {
 
 function envNameFromProduct(productName: string): string {
   const prefix = productName
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .replace(/[^a-z0-9]+/gi, "_")
     .replace(/^_+|_+$/g, "")
     .split("_")
@@ -50,6 +51,7 @@ function envNameFromProduct(productName: string): string {
 
 function envNameFromLabel(productName: string, label: string): string {
   const product = productName
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .replace(/[^a-z0-9]+/gi, "_")
     .replace(/^_+|_+$/g, "")
     .split("_")
@@ -57,6 +59,7 @@ function envNameFromLabel(productName: string, label: string): string {
     .join("_")
     .toUpperCase() || "PRODUCT";
   const suffix = label
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .replace(/^x[-_]/i, "")
     .replace(/authorization/i, "api_key")
     .replace(/bearer/i, "api_key")
@@ -67,29 +70,44 @@ function envNameFromLabel(productName: string, label: string): string {
 }
 
 function envRequirements(text: string, productName: string): ProductEnvRequirement[] {
-  const names = new Map<string, string>();
+  const names = new Map<string, { description: string; required: boolean }>();
+  const add = (name: string, description: string, required = true) => {
+    const current = names.get(name);
+    names.set(name, {
+      description: current?.description ?? description,
+      required: (current?.required ?? false) || required,
+    });
+  };
   for (const match of text.matchAll(/\b[A-Z][A-Z0-9_]{3,}\b/g)) {
     const name = match[0];
     if (/^(HTTP|JSON|REST|SDK|API|URL|GET|POST|PUT|PATCH|DELETE|CLI|HTML|CSS)$/.test(name)) continue;
-    if (/(KEY|TOKEN|SECRET|API|AUTH|PROJECT|REGION|ORG|WORKSPACE)/.test(name)) names.set(name, "Detected uppercase environment variable from documentation.");
+    if (/(KEY|TOKEN|SECRET|API|AUTH|PROJECT|REGION|ORG|WORKSPACE)/.test(name)) add(name, "Detected uppercase environment variable from documentation.");
   }
   for (const match of text.matchAll(/\b([a-z][a-z0-9-]*(?:key|token|secret|credential)[a-z0-9-]*|x-[a-z0-9-]*(?:key|token|secret)[a-z0-9-]*)\b/gi)) {
     const label = match[1];
     if (!label || /^(monkey|keyboard|tokenization)$/i.test(label)) continue;
-    names.set(envNameFromLabel(productName, label), `Detected credential-like field "${label}" from documentation.`);
+    add(envNameFromLabel(productName, label), `Detected credential-like field "${label}" from documentation.`);
+  }
+  for (const match of text.matchAll(/\b((?:project|workspace|org|organization|tenant|account)[-_ ]?(?:id|name)|(?:project|workspace|org|organization|tenant|account)(?:Id|Name)|x-(?:project|workspace|org|organization|tenant|account)-(?:id|name))\b/gi)) {
+    const label = match[1];
+    if (label) add(envNameFromLabel(productName, label), `Detected required identifier field "${label}" from documentation.`);
+  }
+  for (const match of text.matchAll(/\b((?:index|collection|database|service|app|application)[-_ ]?(?:id|name)|(?:index|collection|database|service|app|application)(?:Id|Name)|x-(?:index|collection|database|service|app|application)-(?:id|name))\b/gi)) {
+    const label = match[1];
+    if (label) add(envNameFromLabel(productName, label), `Detected resource identifier field "${label}" from documentation.`, false);
   }
   for (const match of text.matchAll(/\b(authorization|bearer)\b/gi)) {
-    names.set(envNameFromLabel(productName, match[1] ?? "api_key"), "Detected authorization header from documentation.");
+    add(envNameFromLabel(productName, match[1] ?? "api_key"), "Detected authorization header from documentation.");
   }
   for (const match of text.matchAll(/[<[{(](?:your[-_\s]*)?([a-z0-9_-]*(?:api|project|workspace|org)?[-_\s]*(?:key|token|secret))[>\]})]/gi)) {
     const label = match[1];
-    if (label) names.set(envNameFromLabel(productName, label), `Detected credential placeholder "${label}" from documentation.`);
+    if (label) add(envNameFromLabel(productName, label), `Detected credential placeholder "${label}" from documentation.`);
   }
-  return [...names.entries()].slice(0, 8).map(([name, description]) => ({
+  return [...names.entries()].slice(0, 8).map(([name, requirement]) => ({
     name,
     scopes: ["agent", "assertion", "cleanup"],
-    required: true,
-    description,
+    required: requirement.required,
+    description: requirement.description,
   }));
 }
 
