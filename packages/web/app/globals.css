@@ -136,9 +136,18 @@ a { color: inherit; text-decoration: none; }
   color: var(--blue-light);
 }
 .nav-signout {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
   padding: 4px 7px;
   color: var(--text-muted);
   border-radius: var(--radius-sm);
+}
+.nav-signout-form {
+  display: inline-flex;
+  margin: 0;
 }
 .nav-signout:hover {
   background: var(--bg-elevated);

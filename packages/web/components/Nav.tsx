@@ -35,7 +35,9 @@ export async function Nav() {
           <div className="nav-user">
             {user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span className="nav-avatar-fallback">{user.login.slice(0, 1).toUpperCase()}</span>}
             <span>{user.login}</span>
-            <Link className="nav-signout" href="/auth/signout">Sign out</Link>
+            <form className="nav-signout-form" action="/auth/signout" method="post">
+              <button className="nav-signout" type="submit">Sign out</button>
+            </form>
           </div>
         ) : (
           <Link className="nav-signin" title="Sign in with GitHub" href="/auth/github?returnTo=/oz">
