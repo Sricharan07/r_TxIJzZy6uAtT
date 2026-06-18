@@ -42,7 +42,8 @@ function severityFor(run: RunResult): Severity {
 }
 
 export function analyzeRunFailure(run: RunResult, evidence: OzEvidence[]): Finding[] {
-  const failed = run.status === "errored" || run.verdicts.some((verdict) => !verdict.passed);
+  const failed = run.status === "errored"
+    || (run.gradeReport ? !run.gradeReport.taskPassed : run.verdicts.some((verdict) => !verdict.passed && verdict.type !== "llm"));
   if (!failed) return [];
   const code = classify(run);
   return [

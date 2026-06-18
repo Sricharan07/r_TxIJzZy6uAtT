@@ -42,7 +42,10 @@ export function buildOzReport(state: OzAgentState, runs: RunResult[]): OzReport 
   const reportableRuns = runs.filter((run) => run.status !== "canceled");
   const rawFindings = reportableRuns.flatMap((run) => analyzeRunFailure(run, evidence));
   const findings = [...new Map(rawFindings.map((finding) => [finding.code, finding])).values()];
-  const passed = reportableRuns.filter((run) => run.status === "completed" && run.verdicts.every((verdict) => verdict.passed)).length;
+  const passed = reportableRuns.filter((run) =>
+    run.status === "completed"
+    && (run.gradeReport ? run.gradeReport.taskPassed : run.verdicts.every((verdict) => verdict.type === "llm" || verdict.passed))
+  ).length;
   const platformFindings = findings.filter((finding) =>
     finding.code.startsWith("platform_") || finding.code === "agent_cli_failure" || finding.code === "sandbox_failure",
   ).length;

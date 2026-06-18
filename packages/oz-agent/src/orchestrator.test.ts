@@ -156,4 +156,35 @@ describe("OzOrchestrator", () => {
     expect(report.findings[0]?.code).toBe("platform_timeout");
     expect(report.recommendedFixes[0]?.target).toBe("environment");
   });
+
+  it("does not fail Oz reports for advisory-only LLM verdicts", () => {
+    const run: RunResult = {
+      id: "run-advisory",
+      evalId: "eval-1",
+      evalTitle: "Advisory eval",
+      task: "Build integration",
+      agentType: "claude-code",
+      status: "completed",
+      errorType: null,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:00:30.000Z",
+      durationSec: 30,
+      totalSteps: 2,
+      tokens: 100,
+      events: [{ t: 1, kind: "info", text: "Completed integration" }],
+      verdicts: [
+        { assertionIndex: 0, type: "file", name: "entry exists", passed: true },
+        { assertionIndex: 1, type: "llm", name: "advisory pattern check", passed: false },
+      ],
+    };
+    const report = buildOzReport({
+      jobId: "job-1",
+      userId: "user-1",
+      input: { productUrl: "https://example.test", mode: "copilot" },
+      discovery: { docsCandidates: [], selectedDocs: [], githubRepos: [], packages: [], codeExamples: [] },
+    }, [run]);
+
+    expect(report.summary).toContain("1/1 agent run passed");
+    expect(report.findings).toEqual([]);
+  });
 });
