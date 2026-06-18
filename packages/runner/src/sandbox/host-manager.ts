@@ -13,10 +13,12 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExecResult, HttpRequest, HttpResult } from "@kiln/grader";
+import type { ProductRuntimeImage } from "@kiln/shared";
 import { loadDotEnv } from "../env.js";
 
 interface BootedVm {
   id: string;
+  runtimeImage: ProductRuntimeImage;
   tapName: string;
   hostIp: string;
   guestIp: string;
@@ -25,8 +27,12 @@ interface BootedVm {
   process: ChildProcess;
 }
 
+interface FirecrackerBootOptions {
+  runtimeImage?: ProductRuntimeImage;
+}
+
 export interface FirecrackerDriver {
-  boot(id: string): Promise<string>;
+  boot(id: string, options?: FirecrackerBootOptions): Promise<string>;
   health(): Promise<Record<string, unknown>>;
   writeFile(id: string, path: string, contents: string): Promise<void>;
   exec(id: string, cmd: string, cwd?: string, timeoutMs?: number): Promise<ExecResult>;
@@ -41,6 +47,7 @@ export interface FirecrackerHostConfig {
   firecrackerBin: string;
   kernelImagePath: string;
   rootfsPath: string;
+  rootfsPaths: Partial<Record<ProductRuntimeImage, string>>;
   sshKeyPath: string;
   workDir: string;
   listenHost: string;
@@ -58,6 +65,19 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const MAX_COMMAND_TIMEOUT_MS = 3_700_000;
 const MAX_FIRECRACKER_SLOTS = 4_096;
 const TAP_NAME_PATTERN = /^kiln[0-9a-f]+$/;
+const PRODUCT_RUNTIME_IMAGES = new Set<ProductRuntimeImage>([
+  "default",
+  "ubuntu-22.04-node22",
+  "ubuntu-24.04-node22",
+  "python",
+  "go",
+]);
+const RUNTIME_IMAGE_ENV_NAMES: Partial<Record<ProductRuntimeImage, string>> = {
+  "ubuntu-22.04-node22": "KILN_FIRECRACKER_ROOTFS_UBUNTU_22_04_NODE22",
+  "ubuntu-24.04-node22": "KILN_FIRECRACKER_ROOTFS_UBUNTU_24_04_NODE22",
+  python: "KILN_FIRECRACKER_ROOTFS_PYTHON",
+  go: "KILN_FIRECRACKER_ROOTFS_GO",
+};
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -198,15 +218,26 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
 
   constructor(private readonly config: FirecrackerHostConfig) {}
 
-  async boot(id: string): Promise<string> {
+  private rootfsPathFor(runtimeImage: ProductRuntimeImage | undefined): { runtimeImage: ProductRuntimeImage; rootfsPath: string } {
+    const image = runtimeImage && runtimeImage !== "default" ? runtimeImage : "default";
+    if (image === "default") return { runtimeImage: "default", rootfsPath: this.config.rootfsPath };
+    const configured = this.config.rootfsPaths[image];
+    if (configured) return { runtimeImage: image, rootfsPath: configured };
+    if (image === "ubuntu-22.04-node22") return { runtimeImage: image, rootfsPath: this.config.rootfsPath };
+    const envName = RUNTIME_IMAGE_ENV_NAMES[image] ?? `KILN_FIRECRACKER_ROOTFS_${image.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`;
+    throw new Error(`Runtime image "${image}" requires ${envName} to point at a compatible Firecracker rootfs.`);
+  }
+
+  async boot(id: string, options: FirecrackerBootOptions = {}): Promise<string> {
     if (this.vms.has(id)) throw new Error(`Sandbox "${id}" already exists.`);
+    const selectedRootfs = this.rootfsPathFor(options.runtimeImage);
     await this.ensureHostNetworking();
     await this.reapStaleHostState();
     const { tapName, hostIp, guestIp, guestMac } = await this.allocateNetwork();
     const rootDir = await mkdtemp(join(this.config.workDir, `kiln-${id}-`));
-    const rootfsPath = join(rootDir, basename(this.config.rootfsPath));
+    const rootfsPath = join(rootDir, basename(selectedRootfs.rootfsPath));
     const socketPath = join(rootDir, "firecracker.sock");
-    await runFile("cp", ["--sparse=always", this.config.rootfsPath, rootfsPath]);
+    await runFile("cp", ["--sparse=always", selectedRootfs.rootfsPath, rootfsPath]);
 
     let process: ChildProcess | null = null;
     try {
@@ -244,7 +275,7 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
       });
       await firecrackerRequest(socketPath, "PUT", "/actions", { action_type: "InstanceStart" });
 
-      const vm = { id, tapName, hostIp, guestIp, socketPath, rootDir, process };
+      const vm = { id, runtimeImage: selectedRootfs.runtimeImage, tapName, hostIp, guestIp, socketPath, rootDir, process };
       this.vms.set(id, vm);
       await this.waitForGuest(vm);
       await this.configureGuestNetwork(vm);
@@ -264,6 +295,8 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
     return {
       activeSandboxes: this.vms.size,
       activeTapNames: [...this.vms.values()].map((vm) => vm.tapName),
+      activeRuntimeImages: [...this.vms.values()].map((vm) => vm.runtimeImage),
+      configuredRuntimeImages: ["default", ...Object.keys(this.config.rootfsPaths)],
       leakedTapNames: tapNames.filter((tapName) => !this.isActiveTap(tapName)),
     };
   }
@@ -527,7 +560,11 @@ export function createHostManagerServer(driver: FirecrackerDriver, token?: strin
         const body = await jsonBody(req);
         const sandboxId = String(body.sandboxId ?? "");
         if (!sandboxId) throw new Error("sandboxId is required.");
-        send(res, 201, { sandboxId: await driver.boot(sandboxId) });
+        const runtimeImage = body.runtimeImage === undefined ? undefined : String(body.runtimeImage);
+        if (runtimeImage !== undefined && !PRODUCT_RUNTIME_IMAGES.has(runtimeImage as ProductRuntimeImage)) {
+          throw new Error(`Unsupported runtimeImage "${runtimeImage}".`);
+        }
+        send(res, 201, { sandboxId: await driver.boot(sandboxId, { runtimeImage: runtimeImage as ProductRuntimeImage | undefined }) });
         return;
       }
       const match = /^\/v1\/sandboxes\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -599,10 +636,15 @@ export function hostConfigFromEnv(): FirecrackerHostConfig {
     if (!value) throw new Error(`${name} is required.`);
     return value;
   };
+  const rootfsPaths: Partial<Record<ProductRuntimeImage, string>> = {};
+  for (const [image, envName] of Object.entries(RUNTIME_IMAGE_ENV_NAMES) as Array<[ProductRuntimeImage, string]>) {
+    if (process.env[envName]) rootfsPaths[image] = process.env[envName];
+  }
   return {
     firecrackerBin: process.env.KILN_FIRECRACKER_BIN ?? "firecracker",
     kernelImagePath: required("KILN_FIRECRACKER_KERNEL"),
     rootfsPath: required("KILN_FIRECRACKER_ROOTFS"),
+    rootfsPaths,
     sshKeyPath: required("KILN_FIRECRACKER_SSH_KEY"),
     workDir: process.env.KILN_FIRECRACKER_WORK_DIR ?? tmpdir(),
     listenHost: process.env.KILN_FIRECRACKER_MANAGER_HOST ?? "127.0.0.1",

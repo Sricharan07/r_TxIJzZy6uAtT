@@ -12,14 +12,19 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { SandboxHandle, ExecOptions, ExecResult, HttpRequest, HttpResult } from "@kiln/grader";
+import type { ProductRuntimeImage } from "@kiln/shared";
 
 const exec = promisify(execCb);
 type SandboxState = "created" | "booted" | "torn-down";
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 
+export interface SandboxBootOptions {
+  runtimeImage?: ProductRuntimeImage;
+}
+
 export interface RunnerSandbox extends SandboxHandle {
   readonly id: string;
-  boot(): Promise<void>;
+  boot(options?: SandboxBootOptions): Promise<void>;
   writeFile(path: string, contents: string): Promise<void>;
   execStreaming(cmd: string, cwd: string | undefined, onLine: ExecLineHandler, options?: ExecOptions): Promise<ExecResult>;
   teardown(): Promise<void>;
@@ -99,7 +104,7 @@ export class LocalSandbox implements RunnerSandbox {
 
   constructor(public readonly id: string) {}
 
-  async boot(): Promise<void> {
+  async boot(_options: SandboxBootOptions = {}): Promise<void> {
     this.rootDir = await mkdtemp(join(tmpdir(), `kiln-${this.id}-`));
     await this.writeFile("package.json", '{\n  "name": "agent-workspace",\n  "version": "0.0.0"\n}\n');
     this.state = "booted";
@@ -215,10 +220,10 @@ export class FirecrackerSandbox implements RunnerSandbox {
     this.baseUrl = managerUrl.replace(/\/$/, "");
   }
 
-  async boot(): Promise<void> {
+  async boot(options: SandboxBootOptions = {}): Promise<void> {
     const response = await this.request<ManagerBootResponse>("/v1/sandboxes", {
       method: "POST",
-      body: JSON.stringify({ sandboxId: this.id }),
+      body: JSON.stringify({ sandboxId: this.id, runtimeImage: options.runtimeImage }),
     });
     this.remoteId = response.sandboxId;
     this.state = "booted";

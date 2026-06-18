@@ -369,7 +369,7 @@ function sandboxWithProductEnv(
 ): RunnerSandbox {
   return {
     id: sandbox.id,
-    boot: () => sandbox.boot(),
+    boot: (options) => sandbox.boot(options),
     writeFile: (path, contents) => sandbox.writeFile(path, contents),
     exec: (cmd, cwd, options) => sandbox.exec(withScopedEnv(config, scope, cmd, [], productEnv), cwd, options),
     execStreaming: (cmd, cwd, onLine, options) =>
@@ -450,7 +450,7 @@ export async function executeRun(
       throw new Error(`Missing required product environment variables: ${missingEnv.join(", ")}.`);
     }
 
-    await sandbox.boot();
+    await sandbox.boot({ runtimeImage: config.productProfile?.runtime.image });
     booted = true;
     await runProductSteps({
       config,

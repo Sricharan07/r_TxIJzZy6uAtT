@@ -32,7 +32,7 @@ describe("FirecrackerSandbox", () => {
     }) as typeof fetch;
 
     const sandbox = new FirecrackerSandbox("run-1", "https://manager.example", "token", fetchImpl);
-    await sandbox.boot();
+    await sandbox.boot({ runtimeImage: "ubuntu-24.04-node22" });
     await sandbox.writeFile("README.md", "hello");
     expect(await sandbox.exec("npm test", undefined, { timeoutMs: 45_000 })).toEqual({ stdout: "ok", stderr: "", code: 0 });
     const lines: string[] = [];
@@ -60,6 +60,10 @@ describe("FirecrackerSandbox", () => {
       "DELETE",
     ]);
     expect(new Headers(calls[0]?.init.headers).get("Authorization")).toBe("Bearer token");
+    expect(JSON.parse(String(calls[0]?.init.body))).toMatchObject({
+      sandboxId: "run-1",
+      runtimeImage: "ubuntu-24.04-node22",
+    });
     expect(JSON.parse(String(calls[2]?.init.body))).toMatchObject({ timeoutMs: 45_000 });
     expect(JSON.parse(String(calls[3]?.init.body))).toMatchObject({ timeoutMs: 90_000 });
   });

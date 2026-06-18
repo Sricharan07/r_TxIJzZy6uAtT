@@ -7,8 +7,8 @@ import { createHostManagerServer, type FirecrackerDriver } from "./host-manager"
 class FakeDriver implements FirecrackerDriver {
   readonly calls: string[] = [];
 
-  async boot(id: string): Promise<string> {
-    this.calls.push(`boot:${id}`);
+  async boot(id: string, options: { runtimeImage?: string } = {}): Promise<string> {
+    this.calls.push(`boot:${id}:${options.runtimeImage ?? "default"}`);
     return id;
   }
   async health(): Promise<Record<string, unknown>> {
@@ -83,7 +83,7 @@ describe("Firecracker host manager API", () => {
 
     expect(driver.calls).toEqual([
       "health",
-      "boot:run-1",
+      "boot:run-1:default",
       "write:run-1:README.md",
       "exec:run-1:npm test:45000",
       "stream:run-1:npm test:90000",
@@ -91,6 +91,23 @@ describe("Firecracker host manager API", () => {
       "http:run-1:GET:https://api.example/health",
       "http:run-1:POST:https://api.example/webhook",
       "teardown:run-1",
+    ]);
+  });
+
+  it("passes runtime image selection to the Firecracker driver", async () => {
+    const driver = new FakeDriver();
+    const server = createHostManagerServer(driver, "secret");
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const sandbox = new FirecrackerSandbox("run-24", `http://127.0.0.1:${port}`, "secret");
+
+    await sandbox.boot({ runtimeImage: "ubuntu-24.04-node22" });
+    await sandbox.teardown();
+
+    expect(driver.calls).toEqual([
+      "boot:run-24:ubuntu-24.04-node22",
+      "teardown:run-24",
     ]);
   });
 });
