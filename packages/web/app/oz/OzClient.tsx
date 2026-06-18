@@ -137,8 +137,8 @@ function OzPageInner({ user }: OzClientProps) {
 
   async function load(id: string): Promise<string | null> {
     const [jobRes, eventsRes] = await Promise.all([
-      fetch(`/api/oz/jobs/${encodeURIComponent(id)}`, { credentials: "same-origin" }),
-      fetch(`/api/oz/jobs/${encodeURIComponent(id)}/events?limit=250`, { credentials: "same-origin" }),
+      fetch(`/api/oz/jobs/${encodeURIComponent(id)}`, { credentials: "include" }),
+      fetch(`/api/oz/jobs/${encodeURIComponent(id)}/events?limit=250`, { credentials: "include" }),
     ]);
     const jobBody = (await jobRes.json()) as JobResponse;
     const eventsBody = (await eventsRes.json()) as EventsResponse;
@@ -227,7 +227,7 @@ function OzPageInner({ user }: OzClientProps) {
     let cancelled = false;
     const refreshHealth = async () => {
       try {
-        const response = await fetch("/api/system/health", { credentials: "same-origin" });
+        const response = await fetch("/api/system/health", { credentials: "include" });
         const health = (await response.json()) as RunInfrastructureHealth;
         if (!cancelled) setInfraHealth(health);
       } catch {
@@ -288,7 +288,7 @@ function OzPageInner({ user }: OzClientProps) {
     try {
       const res = await fetch("/api/oz/jobs", {
         method: "POST",
-        credentials: "same-origin",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ productUrl, mode, userGoal: goal || undefined, preferredLanguage: "node", agentTargets: ["claude-code"] }),
       });
@@ -313,7 +313,7 @@ function OzPageInner({ user }: OzClientProps) {
     try {
       const res = await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}${path}`, {
         method: "POST",
-        credentials: "same-origin",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body ?? {}),
       });
@@ -337,7 +337,7 @@ function OzPageInner({ user }: OzClientProps) {
     setError(null);
     setRunBlockers([]);
     try {
-      const res = await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}/stop`, { method: "POST", credentials: "same-origin" });
+      const res = await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}/stop`, { method: "POST", credentials: "include" });
       const data = (await res.json()) as ActionResponse;
       if (!res.ok) throw new Error(data.error ?? "Could not stop Oz job.");
       await load(job.id);
@@ -369,8 +369,8 @@ function OzPageInner({ user }: OzClientProps) {
     setError(null);
     try {
       const res = method === "TERMINATE"
-        ? await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}/terminate`, { method: "POST", credentials: "same-origin" })
-        : await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}`, { method: "DELETE", credentials: "same-origin" });
+        ? await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}/terminate`, { method: "POST", credentials: "include" })
+        : await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}`, { method: "DELETE", credentials: "include" });
       const data = (await res.json()) as ActionResponse;
       if (!res.ok) throw new Error(data.error ?? "Could not clean up Oz job.");
       await clearCurrentJob();

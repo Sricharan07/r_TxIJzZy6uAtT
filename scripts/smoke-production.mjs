@@ -6,6 +6,7 @@ loadDotEnv();
 
 const appUrl = (process.env.KILN_SMOKE_APP_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "");
 let cookie = process.env.KILN_SMOKE_SESSION_COOKIE ?? "";
+const sessionCookieName = "kiln_session";
 const timeoutMs = Number(process.env.KILN_SMOKE_TIMEOUT_MS ?? 180_000);
 const pollMs = Number(process.env.KILN_SMOKE_POLL_MS ?? 3_000);
 let generatedSessionHash = "";
@@ -32,7 +33,7 @@ async function ensureSmokeCookie() {
   const token = randomBytes(32).toString("base64url");
   generatedSessionHash = hashSessionToken(token);
   await store.createSession(generatedSessionHash, user.id, new Date(Date.now() + 15 * 60_000).toISOString());
-  cookie = `id=${token}`;
+  cookie = `${sessionCookieName}=${token}`;
   console.log("Created local smoke session.");
 }
 
