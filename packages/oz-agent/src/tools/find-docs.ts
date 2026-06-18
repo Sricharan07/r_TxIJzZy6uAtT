@@ -20,9 +20,9 @@ const DOC_PATHS = [
 
 const DOC_PATTERNS = [/docs?/, /developer/, /api/, /reference/, /quickstart/, /guide/, /sdk/, /auth/, /webhook/];
 
-function candidateFromUrl(url: string, source: "link" | "path" | "sitemap", reason: string): OzDocsCandidate {
+function candidateFromUrl(url: string, source: "link" | "path" | "sitemap" | "llms", reason: string): OzDocsCandidate {
   const score = scoreText(url, DOC_PATTERNS);
-  const sourceBonus = source === "sitemap" ? 0.1 : source === "path" ? 0.05 : 0;
+  const sourceBonus = source === "llms" ? 0.16 : source === "sitemap" ? 0.1 : source === "path" ? 0.05 : 0;
   return {
     url,
     label: new URL(url).pathname || "/",
@@ -56,6 +56,27 @@ async function sitemapUrls(root: URL, fetchImpl: typeof fetch): Promise<string[]
   }
 }
 
+async function llmsTxtUrls(root: URL, fetchImpl: typeof fetch): Promise<string[]> {
+  try {
+    const response = await fetchImpl(new URL("/llms.txt", root).toString(), {
+      headers: { "user-agent": "Kiln-Oz-Agent/1.0 (+https://tryoz.dev)" },
+    });
+    if (!response.ok) return [];
+    const text = await response.text();
+    const urls = new Set<string>();
+    for (const match of text.matchAll(/\]\((https?:\/\/[^)\s]+|\/[^)\s]+)\)/g)) {
+      const raw = match[1];
+      if (raw) urls.add(normalizeUrl(new URL(raw, root).toString()));
+    }
+    for (const match of text.matchAll(/https?:\/\/[^\s)>"']+/g)) {
+      urls.add(normalizeUrl(match[0].replace(/[),.]+$/g, "")));
+    }
+    return [...urls];
+  } catch {
+    return [];
+  }
+}
+
 export const findDocsTool: OzTool<FindDocsInput, { homepageUrl: string; candidates: OzDocsCandidate[] }> = {
   name: "find_docs",
   description: "Find likely documentation pages from a product homepage, common docs paths, and sitemap.",
@@ -78,10 +99,15 @@ export const findDocsTool: OzTool<FindDocsInput, { homepageUrl: string; candidat
       .filter((url) => scoreText(url, DOC_PATTERNS) > 0)
       .slice(0, 20)
       .map((url) => candidateFromUrl(url, "sitemap", "Found in sitemap.xml."));
+    const llms = (await llmsTxtUrls(root, fetchImpl))
+      .filter((url) => new URL(url).origin === root.origin)
+      .filter((url) => scoreText(url, DOC_PATTERNS) > 0)
+      .slice(0, 40)
+      .map((url) => candidateFromUrl(url, "llms", "Found in llms.txt."));
     const submitted = candidateFromUrl(homepageUrl, "link", "Submitted URL.");
-    const candidates = strongestCandidatePerUrl([submitted, ...linked, ...sitemap, ...commonPaths])
+    const candidates = strongestCandidatePerUrl([submitted, ...linked, ...llms, ...sitemap, ...commonPaths])
       .sort((a, b) => b.confidence - a.confidence)
-      .slice(0, 12);
+      .slice(0, 30);
     return { homepageUrl, candidates };
   },
 };

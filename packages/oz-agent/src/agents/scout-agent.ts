@@ -1,4 +1,4 @@
-import type { OzAgentState } from "@kiln/shared";
+import type { OzAgentState, OzDocsCandidate } from "@kiln/shared";
 import { crawlUrlTool } from "../tools/crawl-url.js";
 import { extractCodeBlocksTool } from "../tools/extract-code-blocks.js";
 import { findDocsTool } from "../tools/find-docs.js";
@@ -6,6 +6,30 @@ import { inspectGitHubTool } from "../tools/inspect-github.js";
 import { inspectPackageTool } from "../tools/inspect-package.js";
 import { searchWebTool } from "../tools/search-web.js";
 import type { OzToolContext } from "../tools/contracts.js";
+
+const DOC_SELECTION_LIMIT = 8;
+
+const COVERAGE_RULES: Array<{ key: string; pattern: RegExp }> = [
+  { key: "quickstart", pattern: /quickstart|getting-started|introduction|start/i },
+  { key: "auth", pattern: /auth|authentication|api[-_ ]?key|token|credential/i },
+  { key: "sdk", pattern: /sdk|javascript|typescript|node|client|reference\/js|api-reference\/js|npm/i },
+  { key: "api", pattern: /api|reference|endpoint|rest|graphql|\/v\d+/i },
+  { key: "workflow", pattern: /retrieval|query|search|index|document|webhook|example|guide|tutorial/i },
+];
+
+function selectDocsCandidates(candidates: OzDocsCandidate[], submittedUrl: string): OzDocsCandidate[] {
+  const selected = new Map<string, OzDocsCandidate>();
+  const add = (candidate: OzDocsCandidate | undefined): void => {
+    if (!candidate || selected.has(candidate.url) || selected.size >= DOC_SELECTION_LIMIT) return;
+    selected.set(candidate.url, candidate);
+  };
+  add(candidates.find((candidate) => candidate.url === submittedUrl));
+  for (const rule of COVERAGE_RULES) {
+    add(candidates.find((candidate) => rule.pattern.test(`${candidate.url} ${candidate.label} ${candidate.reason}`)));
+  }
+  for (const candidate of candidates) add(candidate);
+  return [...selected.values()];
+}
 
 export async function runScoutAgent(state: OzAgentState, ctx: OzToolContext): Promise<OzAgentState> {
   const docs = await findDocsTool.execute({ productUrl: state.input.productUrl }, ctx);
@@ -17,7 +41,7 @@ export async function runScoutAgent(state: OzAgentState, ctx: OzToolContext): Pr
   }
 
   const selectedDocs = [];
-  for (const candidate of docs.candidates.slice(0, 5)) {
+  for (const candidate of selectDocsCandidates(docs.candidates, docs.homepageUrl)) {
     try {
       selectedDocs.push(await crawlUrlTool.execute({ url: candidate.url }, ctx));
     } catch {

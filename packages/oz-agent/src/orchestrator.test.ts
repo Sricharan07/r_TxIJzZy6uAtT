@@ -127,6 +127,69 @@ describe("OzOrchestrator", () => {
     expect(ready.state.suiteDraft?.scenarios.some((scenario) => scenario.id === "sdk_import_init")).toBe(true);
   });
 
+  it("uses llms.txt and balanced docs coverage to find SDK pages", async () => {
+    const mossFetch: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.includes("registry.npmjs.org")) {
+        return new Response(JSON.stringify({ "dist-tags": { latest: "1.0.0" } }), { status: 200 });
+      }
+      if (url.endsWith("/llms.txt")) {
+        return new Response([
+          "# Moss Docs",
+          "- [Authentication](https://moss-sdk.test/docs/api-reference/v1/getting-started/authentication)",
+          "- [JavaScript SDK](https://moss-sdk.test/docs/reference/js/api)",
+        ].join("\n"), { status: 200, headers: { "content-type": "text/plain" } });
+      }
+      if (url.endsWith("/sitemap.xml")) {
+        return response(`
+          <urlset>
+            <url><loc>https://moss-sdk.test/docs/api-reference/v1/getting-started/authentication</loc></url>
+            <url><loc>https://moss-sdk.test/docs/api-reference/v1/document-operations/addDocs</loc></url>
+            <url><loc>https://moss-sdk.test/docs/api-reference/v1/document-operations/getDocs</loc></url>
+          </urlset>
+        `);
+      }
+      if (url.includes("/docs/reference/js/api")) {
+        return response(`
+          <title>Moss JavaScript SDK</title>
+          <h1>JavaScript SDK</h1>
+          <p>npm install @moss-dev/moss</p>
+          <pre><code>
+            import { MossClient, SessionIndex } from "@moss-dev/moss";
+            const client = new MossClient({ projectId: process.env.MOSS_PROJECT_ID, apiKey: process.env.MOSS_PROJECT_KEY });
+            const index = await SessionIndex.create(client, { name: "kiln" });
+            await index.addDocs([{ id: "1", text: "hello" }]);
+            await index.query("hello");
+          </code></pre>
+        `);
+      }
+      if (url.includes("/authentication")) {
+        return response(`
+          <title>Moss Authentication</title>
+          <h1>Authentication</h1>
+          <p>Use x-project-key and projectId for API requests.</p>
+        `);
+      }
+      if (url.includes("/document-operations")) {
+        return response(`<title>Moss API</title><p>POST /v1/manage document operation.</p>`);
+      }
+      return response(`<title>Moss Docs</title><a href="/docs/api-reference/v1/getting-started/authentication">Authentication</a>`);
+    };
+    const store = new JsonKilnStore(`/tmp/kiln-oz-llms-${Date.now()}.json`);
+    const user = await store.getOrCreateDevUser();
+    const oz = new OzOrchestrator({ store, fetchImpl: mossFetch });
+    const job = await oz.createJob({ userId: user.id, productUrl: "https://moss-sdk.test/docs", mode: "copilot" });
+    const ready = await oz.runToApproval(job.id);
+
+    const selectedUrls = ready.state.discovery.selectedDocs.map((page) => page.url);
+    expect(selectedUrls).toContain("https://moss-sdk.test/docs/reference/js/api");
+    const sdk = ready.state.productProfile?.sdks.find((item) => item.packageName === "@moss-dev/moss");
+    expect(sdk).toBeDefined();
+    expect(sdk?.symbols).toEqual(expect.arrayContaining(["MossClient", "SessionIndex"]));
+    expect(sdk?.methods).toEqual(expect.arrayContaining(["addDocs", "query"]));
+    expect(ready.state.suiteDraft?.scenarios.some((scenario) => scenario.id === "sdk_import_init")).toBe(true);
+  });
+
   it("keeps Oz run observations compact", () => {
     const event = observeRunEvent("job-1", "running", {
       t: 1,

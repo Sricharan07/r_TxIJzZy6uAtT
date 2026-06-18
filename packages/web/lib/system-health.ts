@@ -127,7 +127,25 @@ async function checkFirecracker(): Promise<HealthCheck> {
     if (!response.ok) {
       return { name: "firecracker", ok: false, message: `Firecracker manager returned HTTP ${response.status}.`, checkedAt };
     }
-    return { name: "firecracker", ok: true, message: "Firecracker manager is reachable.", checkedAt };
+    const body = await response.json().catch(() => undefined) as
+      | { diagnostics?: { activeSandboxes?: number; leakedTapNames?: string[] } }
+      | undefined;
+    const leakedTapNames = body?.diagnostics?.leakedTapNames ?? [];
+    if (leakedTapNames.length > 0) {
+      return {
+        name: "firecracker",
+        ok: false,
+        message: `Firecracker manager has leaked tap devices: ${leakedTapNames.join(", ")}.`,
+        checkedAt,
+      };
+    }
+    const active = body?.diagnostics?.activeSandboxes;
+    return {
+      name: "firecracker",
+      ok: true,
+      message: `Firecracker manager is reachable${typeof active === "number" ? `; ${active} active sandbox${active === 1 ? "" : "es"}.` : "."}`,
+      checkedAt,
+    };
   } catch (err) {
     return {
       name: "firecracker",

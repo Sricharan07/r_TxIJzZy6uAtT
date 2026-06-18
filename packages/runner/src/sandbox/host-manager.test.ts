@@ -11,6 +11,10 @@ class FakeDriver implements FirecrackerDriver {
     this.calls.push(`boot:${id}`);
     return id;
   }
+  async health(): Promise<Record<string, unknown>> {
+    this.calls.push("health");
+    return { activeSandboxes: 0, leakedTapNames: [] };
+  }
   async writeFile(id: string, path: string): Promise<void> {
     this.calls.push(`write:${id}:${path}`);
   }
@@ -60,6 +64,8 @@ describe("Firecracker host manager API", () => {
     const { port } = server.address() as AddressInfo;
     const sandbox = new FirecrackerSandbox("run-1", `http://127.0.0.1:${port}`, "secret");
 
+    const health = await fetch(`http://127.0.0.1:${port}/v1/health`, { headers: { authorization: "Bearer secret" } });
+    expect(await health.json()).toMatchObject({ ok: true, diagnostics: { leakedTapNames: [] } });
     await sandbox.boot();
     await sandbox.writeFile("README.md", "hello");
     expect(await sandbox.exec("npm test", undefined, { timeoutMs: 45_000 })).toMatchObject({ code: 0 });
@@ -76,6 +82,7 @@ describe("Firecracker host manager API", () => {
     await sandbox.teardown();
 
     expect(driver.calls).toEqual([
+      "health",
       "boot:run-1",
       "write:run-1:README.md",
       "exec:run-1:npm test:45000",

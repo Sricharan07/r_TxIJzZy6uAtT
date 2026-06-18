@@ -7,7 +7,7 @@
  * Host-level forwarding/NAT policy is provisioned outside this process.
  */
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -27,6 +27,7 @@ interface BootedVm {
 
 export interface FirecrackerDriver {
   boot(id: string): Promise<string>;
+  health(): Promise<Record<string, unknown>>;
   writeFile(id: string, path: string, contents: string): Promise<void>;
   exec(id: string, cmd: string, cwd?: string, timeoutMs?: number): Promise<ExecResult>;
   execStreaming(id: string, cmd: string, cwd: string | undefined, onLine: ExecLineHandler, timeoutMs?: number): Promise<ExecResult>;
@@ -55,6 +56,8 @@ type ExecStream = "stdout" | "stderr";
 type ExecLineHandler = (stream: ExecStream, line: string) => void | Promise<void>;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const MAX_COMMAND_TIMEOUT_MS = 3_700_000;
+const MAX_FIRECRACKER_SLOTS = 4_096;
+const TAP_NAME_PATTERN = /^kiln[0-9a-f]+$/;
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -131,6 +134,35 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function stopProcess(process: ChildProcess | null): Promise<void> {
+  if (!process || process.exitCode !== null || process.signalCode !== null) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      process.kill("SIGKILL");
+      resolve();
+    }, 3_000);
+    process.once("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    process.kill("SIGKILL");
+  });
+}
+
+function tapNameForSlot(slot: number): string {
+  return `kiln${slot.toString(16)}`.slice(0, 15);
+}
+
+function networkForSlot(slot: number): { tapName: string; hostIp: string; guestIp: string; guestMac: string } {
+  const subnet = 30 + (slot % 190);
+  return {
+    tapName: tapNameForSlot(slot),
+    hostIp: `172.30.${subnet}.1`,
+    guestIp: `172.30.${subnet}.2`,
+    guestMac: `06:00:ac:1e:${subnet.toString(16).padStart(2, "0")}:02`,
+  };
+}
+
 function firecrackerRequest(socketPath: string, method: string, path: string, body: unknown): Promise<void> {
   const payload = JSON.stringify(body);
   return new Promise((resolve, reject) => {
@@ -162,18 +194,15 @@ function firecrackerRequest(socketPath: string, method: string, path: string, bo
 
 export class ProcessFirecrackerDriver implements FirecrackerDriver {
   private readonly vms = new Map<string, BootedVm>();
-  private slot = 1;
+  private nextSlot = 1;
 
   constructor(private readonly config: FirecrackerHostConfig) {}
 
   async boot(id: string): Promise<string> {
     if (this.vms.has(id)) throw new Error(`Sandbox "${id}" already exists.`);
     await this.ensureHostNetworking();
-    const slot = this.slot++;
-    const tapName = `kiln${slot.toString(16)}`.slice(0, 15);
-    const subnet = 30 + (slot % 190);
-    const hostIp = `172.30.${subnet}.1`;
-    const guestIp = `172.30.${subnet}.2`;
+    await this.reapStaleHostState();
+    const { tapName, hostIp, guestIp, guestMac } = await this.allocateNetwork();
     const rootDir = await mkdtemp(join(this.config.workDir, `kiln-${id}-`));
     const rootfsPath = join(rootDir, basename(this.config.rootfsPath));
     const socketPath = join(rootDir, "firecracker.sock");
@@ -206,7 +235,7 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
       });
       await firecrackerRequest(socketPath, "PUT", "/network-interfaces/eth0", {
         iface_id: "eth0",
-        guest_mac: `06:00:ac:1e:${subnet.toString(16).padStart(2, "0")}:02`,
+        guest_mac: guestMac,
         host_dev_name: tapName,
       });
       await firecrackerRequest(socketPath, "PUT", "/machine-config", {
@@ -222,11 +251,21 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
       return id;
     } catch (err) {
       this.vms.delete(id);
-      process?.kill("SIGKILL");
+      await stopProcess(process);
       await runFile("ip", ["link", "del", "dev", tapName]).catch(() => {});
       await rm(rootDir, { recursive: true, force: true });
       throw err;
     }
+  }
+
+  async health(): Promise<Record<string, unknown>> {
+    await this.reapStaleHostState();
+    const tapNames = await this.listKilnTapNames();
+    return {
+      activeSandboxes: this.vms.size,
+      activeTapNames: [...this.vms.values()].map((vm) => vm.tapName),
+      leakedTapNames: tapNames.filter((tapName) => !this.isActiveTap(tapName)),
+    };
   }
 
   async writeFile(id: string, path: string, contents: string): Promise<void> {
@@ -287,9 +326,62 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
   async teardown(id: string): Promise<void> {
     const vm = this.requireVm(id);
     this.vms.delete(id);
-    vm.process.kill("SIGKILL");
+    await stopProcess(vm.process);
     await runFile("ip", ["link", "del", "dev", vm.tapName]).catch(() => {});
     await rm(vm.rootDir, { recursive: true, force: true });
+  }
+
+  private async allocateNetwork(): Promise<{ tapName: string; hostIp: string; guestIp: string; guestMac: string }> {
+    for (let attempt = 0; attempt < MAX_FIRECRACKER_SLOTS; attempt++) {
+      const slot = this.nextSlot;
+      this.nextSlot = this.nextSlot >= MAX_FIRECRACKER_SLOTS ? 1 : this.nextSlot + 1;
+      const network = networkForSlot(slot);
+      if (this.isActiveTap(network.tapName)) continue;
+      if (await this.tapExists(network.tapName)) {
+        await runFile("ip", ["link", "del", "dev", network.tapName]).catch(() => undefined);
+        if (await this.tapExists(network.tapName)) continue;
+      }
+      return network;
+    }
+    throw new Error("No available Firecracker tap slot.");
+  }
+
+  private isActiveTap(tapName: string): boolean {
+    return [...this.vms.values()].some((vm) => vm.tapName === tapName);
+  }
+
+  private async tapExists(tapName: string): Promise<boolean> {
+    return (await runCommand("ip", ["link", "show", "dev", tapName])).code === 0;
+  }
+
+  private async listKilnTapNames(): Promise<string[]> {
+    const result = await runCommand("ip", ["tuntap", "show"]);
+    if (result.code !== 0) return [];
+    return result.stdout
+      .split("\n")
+      .map((line) => line.split(":", 1)[0]?.trim() ?? "")
+      .filter((name) => TAP_NAME_PATTERN.test(name));
+  }
+
+  private async reapStaleHostState(): Promise<void> {
+    const activeRootDirs = new Set([...this.vms.values()].map((vm) => vm.rootDir));
+    for (const tapName of await this.listKilnTapNames()) {
+      if (!this.isActiveTap(tapName)) {
+        await runFile("ip", ["link", "del", "dev", tapName]).catch(() => undefined);
+      }
+    }
+    let entries;
+    try {
+      entries = await readdir(this.config.workDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    await Promise.all(entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith("kiln-"))
+      .map(async (entry) => {
+        const path = join(this.config.workDir, entry.name);
+        if (!activeRootDirs.has(path)) await rm(path, { recursive: true, force: true });
+      }));
   }
 
   private async waitForSocket(socketPath: string): Promise<void> {
@@ -427,6 +519,7 @@ export function createHostManagerServer(driver: FirecrackerDriver, token?: strin
           ok: true,
           service: "kiln-firecracker-host-manager",
           checkedAt: new Date().toISOString(),
+          diagnostics: await driver.health(),
         });
         return;
       }
