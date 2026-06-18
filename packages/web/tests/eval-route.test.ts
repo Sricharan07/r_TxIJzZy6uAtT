@@ -6,6 +6,12 @@ const state = vi.hoisted(() => ({
   store: {
     getEval: vi.fn(),
     listRuns: vi.fn(),
+    createEval: vi.fn(),
+    upsertProductSecrets: vi.fn(),
+  },
+  jobs: {
+    createRunsForEval: vi.fn(),
+    enqueueRun: vi.fn(),
   },
 }));
 
@@ -17,7 +23,13 @@ vi.mock("../lib/auth", () => ({
   currentUserId: state.currentUserId,
 }));
 
+vi.mock("../lib/jobs", () => ({
+  createRunsForEval: state.jobs.createRunsForEval,
+  enqueueRun: state.jobs.enqueueRun,
+}));
+
 import { GET } from "../app/api/evals/[id]/route";
+import { POST } from "../app/api/evals/route";
 
 const config: EvalConfig = {
   task: "Create a checkout integration",
@@ -104,5 +116,58 @@ describe("eval detail API authorization", () => {
     expect(status).toBe(200);
     expect(body).toMatchObject({ eval: { id: "eval-1", shareToken: "cfg-share-token" } });
     expect(state.store.listRuns).toHaveBeenCalledWith("eval-1");
+  });
+});
+
+describe("eval creation API", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.currentUserId.mockResolvedValue("owner-1");
+    state.store.createEval.mockImplementation(async (userId: string, input: EvalConfig) => ({
+      id: "eval-created",
+      userId,
+      shareToken: "cfg-created",
+      config: input,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }));
+    state.store.upsertProductSecrets.mockResolvedValue([]);
+    state.jobs.createRunsForEval.mockResolvedValue([
+      { ...run, id: "run-created", evalId: "eval-created", status: "pending" },
+    ]);
+    state.jobs.enqueueRun.mockResolvedValue(undefined);
+  });
+
+  it("stores manual product secrets separately from eval config", async () => {
+    const configWithSecret = {
+      ...config,
+      productProfile: {
+        companyName: "ExampleCo",
+        productName: "Example API",
+        productType: "api",
+        runtime: { language: "node" },
+        docsSources: [{ type: "url", label: "Docs", content: "https://example.test/docs", crawlDepth: "single" }],
+        requiredEnv: [{ name: "EXAMPLE_API_KEY", scopes: ["agent", "assertion"], required: true }],
+      },
+      productSecrets: {
+        EXAMPLE_API_KEY: "secret-value",
+      },
+    };
+
+    const response = await POST(new Request("http://test.local/api/evals", {
+      method: "POST",
+      body: JSON.stringify(configWithSecret),
+    }));
+
+    expect(response.status).toBe(201);
+    expect(state.store.createEval).toHaveBeenCalledTimes(1);
+    const [, storedConfig] = state.store.createEval.mock.calls[0]!;
+    expect(storedConfig).not.toHaveProperty("productSecrets");
+    expect(JSON.stringify(storedConfig)).not.toContain("secret-value");
+    expect(state.store.upsertProductSecrets).toHaveBeenCalledWith({
+      userId: "owner-1",
+      scopeType: "eval",
+      scopeId: "eval-created",
+      values: { EXAMPLE_API_KEY: "secret-value" },
+    });
   });
 });

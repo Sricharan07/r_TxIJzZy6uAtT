@@ -166,6 +166,27 @@ function validateEvalConfig(body: unknown): body is EvalConfig {
   return true;
 }
 
+function productSecretsFrom(body: unknown, config: EvalConfig): Record<string, string> | Response {
+  if (!isRecord(body) || body.productSecrets === undefined) return {};
+  if (!isRecord(body.productSecrets)) return Response.json({ error: "productSecrets must be an object" }, { status: 400 });
+  const declared = new Set((config.productProfile?.requiredEnv ?? []).map((env) => env.name));
+  const values: Record<string, string> = {};
+  for (const [name, rawValue] of Object.entries(body.productSecrets)) {
+    if (!ENV_NAME.test(name)) return Response.json({ error: `Invalid env name: ${name}` }, { status: 400 });
+    if (!declared.has(name)) return Response.json({ error: `${name} is not declared by this product profile.` }, { status: 400 });
+    if (typeof rawValue !== "string") return Response.json({ error: `${name} must be a string.` }, { status: 400 });
+    const value = rawValue.trim();
+    if (value) values[name] = value;
+  }
+  return values;
+}
+
+function evalConfigFrom(body: unknown): unknown {
+  if (!isRecord(body)) return body;
+  const { productSecrets: _productSecrets, ...config } = body;
+  return config;
+}
+
 export async function POST(req: Request): Promise<Response> {
   let body: unknown;
   try {
@@ -174,14 +195,25 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  if (!validateEvalConfig(body)) {
+  const config = evalConfigFrom(body);
+  if (!validateEvalConfig(config)) {
     return Response.json({ error: "Invalid eval config" }, { status: 400 });
   }
+  const productSecrets = productSecretsFrom(body, config);
+  if (productSecrets instanceof Response) return productSecrets;
 
   const store = getStore();
   const userId = await currentUserId();
   if (!userId) return Response.json({ error: "GitHub sign-in required" }, { status: 401 });
-  const evalRecord = await store.createEval(userId, body);
+  const evalRecord = await store.createEval(userId, config);
+  if (Object.keys(productSecrets).length > 0) {
+    await store.upsertProductSecrets({
+      userId,
+      scopeType: "eval",
+      scopeId: evalRecord.id,
+      values: productSecrets,
+    });
+  }
   const runs = await createRunsForEval(store, evalRecord);
   try {
     await Promise.all(runs.map((run) => enqueueRun(evalRecord, run)));

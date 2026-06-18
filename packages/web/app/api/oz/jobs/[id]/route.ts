@@ -10,8 +10,12 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   try {
     const { id } = await params;
     const job = await refreshOwnedOzJob(id, userId);
-    const artifacts = await getStore().listOzArtifacts(id);
-    return Response.json({ job, artifacts });
+    const store = getStore();
+    const [artifacts, secrets] = await Promise.all([
+      store.listOzArtifacts(id),
+      store.listProductSecretSummaries(userId, "oz_job", id),
+    ]);
+    return Response.json({ job, artifacts, secrets });
   } catch {
     return Response.json({ error: "Oz job not found" }, { status: 404 });
   }

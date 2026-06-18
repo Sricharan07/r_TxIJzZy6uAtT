@@ -10,6 +10,11 @@ function baseAssertions(): Assertion[] {
   return [
     { type: "file", name: "Integration entrypoint exists", config: { path: "src/index.mjs" } },
     { type: "shell", name: "Project command succeeds", config: { command: "node src/index.mjs" } },
+    {
+      type: "shell",
+      name: "Result artifact is valid JSON",
+      config: { command: "test -s src/oz-result.json && node -e \"JSON.parse(require('node:fs').readFileSync('src/oz-result.json','utf8'))\"" },
+    },
   ];
 }
 

@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { OzArtifact, OzEvent, OzJob, OzMode, OzScenario, OzSuiteDraft } from "@kiln/shared";
+import type { OzArtifact, OzEvent, OzJob, OzMode, OzScenario, OzSuiteDraft, ProductSecretSummary } from "@kiln/shared";
 
 interface JobResponse {
   job: OzJob;
   artifacts?: OzArtifact[];
+  secrets?: ProductSecretSummary[];
   error?: string;
 }
 
@@ -123,6 +124,8 @@ function OzPageInner({ user }: OzClientProps) {
   const [visibleEvents, setVisibleEvents] = useState<OzEvent[]>([]);
   const [eventQueue, setEventQueue] = useState<OzEvent[]>([]);
   const [artifacts, setArtifacts] = useState<OzArtifact[]>([]);
+  const [secretSummaries, setSecretSummaries] = useState<ProductSecretSummary[]>([]);
+  const [secretInputs, setSecretInputs] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -145,6 +148,7 @@ function OzPageInner({ user }: OzClientProps) {
     if (!jobRes.ok) throw new Error(jobBody.error ?? "Could not load Oz job.");
     setJob(jobBody.job);
     setArtifacts(jobBody.artifacts ?? []);
+    setSecretSummaries(jobBody.secrets ?? []);
     setDraftSuite(jobBody.job.state.suiteDraft ?? null);
     const nextEvents = eventsBody.events ?? [];
     setEvents(nextEvents);
@@ -194,6 +198,8 @@ function OzPageInner({ user }: OzClientProps) {
           setVisibleEvents([]);
           setEventQueue([]);
           setArtifacts([]);
+          setSecretSummaries([]);
+          setSecretInputs({});
           setDraftSuite(null);
           if (message.includes("GitHub sign-in")) setAuthRequired(true);
           else if (!message.includes("not found")) setError(message);
@@ -261,6 +267,7 @@ function OzPageInner({ user }: OzClientProps) {
   const runCount = job?.state.run?.runIds.length ?? 0;
   const requiredSecrets = job?.state.productProfile?.requiredEnv.length ?? 0;
   const missingSecrets = job?.state.verification?.missingSecrets ?? [];
+  const savedSecretNames = useMemo(() => new Set(secretSummaries.map((secret) => secret.name)), [secretSummaries]);
   const currentRunBlockers = runBlockers.length > 0 ? runBlockers : infraHealth && !infraHealth.ok ? infraHealth.blockers : [];
   const canRunSuite = Boolean(
     job?.status === "awaiting_approval"
@@ -355,6 +362,8 @@ function OzPageInner({ user }: OzClientProps) {
     setVisibleEvents([]);
     setEventQueue([]);
     setArtifacts([]);
+    setSecretSummaries([]);
+    setSecretInputs({});
     setDraftSuite(null);
     setInfraHealth(null);
     setRunBlockers([]);
@@ -401,6 +410,32 @@ function OzPageInner({ user }: OzClientProps) {
       },
     });
     setEditing(null);
+  }
+
+  async function saveSecrets() {
+    if (!job) return;
+    setBusy(true);
+    setError(null);
+    setRunBlockers([]);
+    try {
+      const res = await fetch(`/api/oz/jobs/${encodeURIComponent(job.id)}/secrets`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secrets: secretInputs }),
+      });
+      const data = (await res.json()) as JobResponse;
+      if (!res.ok || !data.job) throw new Error(data.error ?? "Could not save product credentials.");
+      setJob(data.job);
+      setSecretSummaries(data.secrets ?? []);
+      setSecretInputs({});
+      await load(job.id);
+      setStreamVersion((version) => version + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save product credentials.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function removeScenario(id: string) {
@@ -608,6 +643,41 @@ function OzPageInner({ user }: OzClientProps) {
           <p className="oz-summary">{job.state.productProfile.summary}</p>
         </section>
       )}
+
+      {job?.state.productProfile?.requiredEnv.length ? (
+        <section className="oz-panel">
+          <div className="oz-panel-header">
+            <h2>Product credentials</h2>
+            <span className="badge">{missingSecrets.length ? `${missingSecrets.length} missing` : "ready"}</span>
+          </div>
+          <div className="secret-list">
+            {job.state.productProfile.requiredEnv.map((env) => {
+              const saved = savedSecretNames.has(env.name);
+              const missing = missingSecrets.includes(env.name);
+              return (
+                <div className="secret-row" key={env.name}>
+                  <div>
+                    <strong className="mono">{env.name}</strong>
+                    <span>{env.required === false ? "optional" : "required"} · {saved ? "saved" : missing ? "missing" : "available from environment"}</span>
+                  </div>
+                  <input
+                    className="inline-input mono"
+                    type="password"
+                    value={secretInputs[env.name] ?? ""}
+                    placeholder={saved ? "Saved value" : "Paste value"}
+                    onChange={(e) => setSecretInputs((current) => ({ ...current, [env.name]: e.target.value }))}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <div className="oz-card-actions">
+            <button className="btn btn-primary" disabled={busy || Object.keys(secretInputs).length === 0} onClick={() => void saveSecrets()}>
+              {busy ? "Saving..." : "Save credentials"}
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {docsMap.length > 0 && (
         <section className="oz-panel">

@@ -221,6 +221,66 @@ describe("executeRun", () => {
     }
   });
 
+  it("uses eval-scoped product env overlays for setup, agent commands, assertions, and cleanup", async () => {
+    const previous = process.env.KILN_PRODUCT_TOKEN;
+    delete process.env.KILN_PRODUCT_TOKEN;
+    const envCheckingAgent: Agent = {
+      type: "claude-code",
+      async startTask(task) {
+        const check = await task.sandbox.exec("test \"$KILN_PRODUCT_TOKEN\" = \"overlay-secret\" && mkdir -p src && echo ok > src/agent-env.txt");
+        if (check.code !== 0) throw new Error(check.stderr || check.stdout || "agent env check failed");
+        return {
+          events: [{ t: 1, kind: "command", text: "Verified product env inside agent" }],
+          tokens: 50,
+          steps: 1,
+          async collectArtifacts() {},
+        };
+      },
+    };
+    try {
+      const result = await executeRun(
+        {
+          ...config,
+          productProfile: {
+            companyName: "TestCo",
+            productName: "Overlay API",
+            productType: "api",
+            runtime: { language: "node", image: "default" },
+            docsSources: [],
+            requiredEnv: [
+              { name: "KILN_PRODUCT_TOKEN", scopes: ["setup", "agent", "assertion", "cleanup"], required: true },
+            ],
+            setupSteps: [{ name: "Setup receives overlay secret", command: "test \"$KILN_PRODUCT_TOKEN\" = \"overlay-secret\"" }],
+            cleanupSteps: [{ name: "Cleanup receives overlay secret", command: "test \"$KILN_PRODUCT_TOKEN\" = \"overlay-secret\"" }],
+          },
+          assertions: [
+            {
+              type: "file",
+              name: "Agent wrote file after env check",
+              config: { path: "src/agent-env.txt", contains: "ok" },
+            },
+            {
+              type: "shell",
+              name: "Assertion receives overlay secret",
+              config: { command: "test \"$KILN_PRODUCT_TOKEN\" = \"overlay-secret\"" },
+            },
+          ],
+        },
+        {
+          sandbox: new LocalSandbox("product-env-overlay-test"),
+          agent: envCheckingAgent,
+          productEnv: { KILN_PRODUCT_TOKEN: "overlay-secret" },
+        },
+      );
+
+      expect(result.status).toBe("completed");
+      expect(result.verdicts[0]?.passed).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.KILN_PRODUCT_TOKEN;
+      else process.env.KILN_PRODUCT_TOKEN = previous;
+    }
+  });
+
   it("fails fast when a required product environment variable is missing", async () => {
     const result = await executeRun(
       {

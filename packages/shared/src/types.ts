@@ -113,6 +113,16 @@ export interface ProductEnvRequirement {
   description?: string;
 }
 
+export type ProductSecretScopeType = "oz_job" | "eval";
+
+export interface ProductSecretSummary {
+  scopeType: ProductSecretScopeType;
+  scopeId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type ProductPackageManager = "npm" | "pip" | "go" | "shell";
 
 export interface ProductPackage {
@@ -370,6 +380,8 @@ export interface EvalConfig {
     modelId?: string;
     /** Requested run count. Slice 1 execution still stores each run independently. */
     requestedRuns?: number;
+    /** Optional job whose product secrets were copied into this eval. Values are stored separately. */
+    productSecretSourceJobId?: string;
   };
 }
 
@@ -728,7 +740,10 @@ export interface RunSummary {
 export function summarize(run: RunResult): RunSummary {
   const total = run.verdicts.length;
   const passed = run.verdicts.filter((v) => v.passed).length;
-  return { passed, total, ok: run.errorType === null && total > 0 && passed === total };
+  const ok = run.gradeReport
+    ? run.errorType === null && run.gradeReport.taskPassed
+    : run.errorType === null && total > 0 && run.verdicts.every((verdict) => verdict.type === "llm" || verdict.passed);
+  return { passed, total, ok };
 }
 
 /** mm:ss formatting for durations. */

@@ -249,6 +249,7 @@ function NewEvalForm() {
   const [task, setTask] = useState(sdkTemplate.task);
   const [extraContexts, setExtraContexts] = useState<ContextSource[]>([]);
   const [assertions, setAssertions] = useState<Assertion[]>(sdkTemplate.assertions);
+  const [productSecrets, setProductSecrets] = useState<Record<string, string>>({});
   const [agentType, setAgentType] = useState<AgentType>("claude-code");
   const [timeoutSec, setTimeoutSec] = useState(300);
   const [requestedRuns, setRequestedRuns] = useState(1);
@@ -282,6 +283,7 @@ function NewEvalForm() {
               runtime: { ...DEFAULT_PRODUCT.runtime, language: data.eval.config.language },
             },
           );
+          setProductSecrets({});
           setExtraContexts(data.eval.config.context);
           setAssertions(data.eval.config.assertions);
           setAgentType(data.eval.config.metadata.agentType);
@@ -320,6 +322,7 @@ function NewEvalForm() {
     setTask(next.task);
     setAssertions(next.assertions);
     setExtraContexts([]);
+    setProductSecrets({});
   }
 
   function updateProductContext(idx: number, patch: Partial<ContextSource>) {
@@ -495,6 +498,10 @@ function NewEvalForm() {
       preflightChecks: product.preflightChecks ?? [],
       cleanupSteps,
     };
+    const declaredSecretNames = new Set((product.requiredEnv ?? []).map((env) => env.name));
+    const declaredProductSecrets = Object.fromEntries(
+      Object.entries(productSecrets).filter(([name, value]) => declaredSecretNames.has(name) && value.trim()),
+    );
     try {
       const res = await fetch("/api/evals", {
         method: "POST",
@@ -506,6 +513,7 @@ function NewEvalForm() {
           context: extraContexts,
           assertions,
           metadata: { agentType, timeoutSec, requestedRuns },
+          productSecrets: declaredProductSecrets,
         }),
       });
       const data = (await res.json()) as { reportUrl?: string; error?: string };
@@ -618,8 +626,28 @@ function NewEvalForm() {
                 <input
                   className="inline-input mono"
                   value={secret.name}
-                  onChange={(e) => updateSecret(i, { name: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "") })}
+                  onChange={(e) => {
+                    const name = e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "");
+                    const previous = secret.name;
+                    updateSecret(i, { name });
+                    setProductSecrets((current) => {
+                      const next = { ...current };
+                      if (previous !== name) {
+                        next[name] = next[previous] ?? "";
+                        delete next[previous];
+                      }
+                      return next;
+                    });
+                  }}
                   aria-label="Environment variable name"
+                />
+                <input
+                  className="inline-input mono"
+                  type="password"
+                  value={productSecrets[secret.name] ?? ""}
+                  placeholder="value"
+                  onChange={(e) => setProductSecrets((current) => ({ ...current, [secret.name]: e.target.value }))}
+                  aria-label={`Value for ${secret.name}`}
                 />
                 <label className="secret-required">
                   <input
@@ -643,12 +671,17 @@ function NewEvalForm() {
                 <button
                   className="ctx-remove"
                   aria-label="Remove environment variable"
-                  onClick={() =>
+                  onClick={() => {
                     setProduct((current) => ({
                       ...current,
                       requiredEnv: (current.requiredEnv ?? []).filter((_, idx) => idx !== i),
-                    }))
-                  }
+                    }));
+                    setProductSecrets((current) => {
+                      const next = { ...current };
+                      delete next[secret.name];
+                      return next;
+                    });
+                  }}
                 >
                   x
                 </button>

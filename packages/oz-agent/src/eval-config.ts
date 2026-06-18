@@ -76,6 +76,7 @@ export function scenarioToEvalConfig({
       agentType,
       timeoutSec: 420,
       requestedRuns,
+      productSecretSourceJobId: state.jobId,
     },
   };
 }

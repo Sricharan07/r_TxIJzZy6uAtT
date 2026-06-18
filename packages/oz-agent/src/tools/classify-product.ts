@@ -128,8 +128,34 @@ function authProfile(text: string, pages: OzCrawledPage[], productName: string) 
   };
 }
 
+function endpointSurfaces(pages: OzCrawledPage[]) {
+  return pages.flatMap((page) => {
+    const found = new Map<string, { method?: string; target: string }>();
+    for (const match of page.text.matchAll(/\b(GET|POST|PUT|PATCH|DELETE)\s+(https?:\/\/[^\s"'`<>]+|\/[a-z0-9/_:.-]+)/gi)) {
+      const method = match[1]?.toUpperCase();
+      const target = match[2]?.replace(/[),.]+$/g, "");
+      if (target) found.set(`${method ?? ""} ${target}`, { method, target });
+    }
+    for (const match of page.text.matchAll(/https?:\/\/[^\s"'`<>]+/gi)) {
+      const target = match[0].replace(/[),.]+$/g, "");
+      if (/\/v\d+|api|graphql|manage|query|search|index/i.test(target)) found.set(target, { target });
+    }
+    return [...found.values()].slice(0, 8).map((item) => ({
+      name: item.method ? `${item.method} ${item.target}` : item.target,
+      method: item.method ? endpointMethod(item.method) : undefined,
+      path: item.target,
+      description: "Documented API endpoint found in product docs.",
+      evidence: [evidence(page.url, item.method ? `${item.method} ${item.target}` : item.target, 0.82)],
+    }));
+  });
+}
+
+function endpointMethod(method: string) {
+  return method as "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+}
+
 function surfaces(pages: OzCrawledPage[]) {
-  const apiSurfaces = [
+  const heuristicSurfaces = [
     [/quickstart|first call/i, "First successful call"],
     [/webhook/i, "Webhook handling"],
     [/idempot/i, "Idempotency"],
@@ -145,6 +171,7 @@ function surfaces(pages: OzCrawledPage[]) {
         }]
       : [];
   });
+  const apiSurfaces = [...endpointSurfaces(pages), ...heuristicSurfaces];
   const webhookPage = pages.find((item) => /webhook/i.test(item.text));
   return {
     APIs: apiSurfaces,

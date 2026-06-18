@@ -1,5 +1,7 @@
 import type { EvalConfig, ProductEnvScope } from "@kiln/shared";
 
+export type ProductEnvValues = Record<string, string>;
+
 export const BUILTIN_AGENT_ENV = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
@@ -31,36 +33,41 @@ function declaredEnvNames(config: EvalConfig, scope: ProductEnvScope): string[] 
   return [...names];
 }
 
-export function missingRequiredProductEnv(config: EvalConfig): string[] {
+function envValue(name: string, values: ProductEnvValues = {}): string | undefined {
+  return values[name] || process.env[name];
+}
+
+export function missingRequiredProductEnv(config: EvalConfig, values: ProductEnvValues = {}): string[] {
   const missing: string[] = [];
   for (const item of config.productProfile?.requiredEnv ?? []) {
     if (item.required === false) continue;
-    if (!process.env[item.name]) missing.push(item.name);
+    if (!envValue(item.name, values)) missing.push(item.name);
   }
   return [...new Set(missing)].sort();
 }
 
-export function envAssignments(config: EvalConfig, scope: ProductEnvScope, extraNames: string[] = []): string[] {
+export function envAssignments(config: EvalConfig, scope: ProductEnvScope, extraNames: string[] = [], values: ProductEnvValues = {}): string[] {
   const names = new Set([...extraNames, ...declaredEnvNames(config, scope)]);
   return [...names].flatMap((name) => {
-    const value = process.env[name];
+    const value = envValue(name, values);
     return value ? [`${name}=${shellQuote(value)}`] : [];
   });
 }
 
-export function envPrefix(config: EvalConfig, scope: ProductEnvScope, extraNames: string[] = []): string {
-  const assignments = envAssignments(config, scope, extraNames);
+export function envPrefix(config: EvalConfig, scope: ProductEnvScope, extraNames: string[] = [], values: ProductEnvValues = {}): string {
+  const assignments = envAssignments(config, scope, extraNames, values);
   return assignments.length ? `env ${assignments.join(" ")} ` : "";
 }
 
-export function withScopedEnv(config: EvalConfig, scope: ProductEnvScope, command: string, extraNames: string[] = []): string {
-  return `${envPrefix(config, scope, extraNames)}${command}`;
+export function withScopedEnv(config: EvalConfig, scope: ProductEnvScope, command: string, extraNames: string[] = [], values: ProductEnvValues = {}): string {
+  const prefix = envPrefix(config, scope, extraNames, values);
+  return prefix ? `${prefix}sh -c ${shellQuote(command)}` : command;
 }
 
-export function redactProductEnvValues(config: EvalConfig, text: string): string {
+export function redactProductEnvValues(config: EvalConfig, text: string, values: ProductEnvValues = {}): string {
   let redacted = text;
   for (const item of config.productProfile?.requiredEnv ?? []) {
-    const value = process.env[item.name];
+    const value = envValue(item.name, values);
     if (!value || value.length < 3) continue;
     redacted = redacted.split(value).join(`[redacted:${item.name}]`);
   }

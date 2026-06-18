@@ -7,6 +7,7 @@ import {
   type OzArtifactRow,
   type OzEventRow,
   type OzJobRow,
+  type ProductSecretRow,
   type RunRow,
   type ServiceHeartbeatRow,
   type UserRow,
@@ -25,6 +26,8 @@ import type {
   OzJob,
   OzJobStatus,
   OzMode,
+  ProductSecretScopeType,
+  ProductSecretSummary,
   RunResult,
   ServiceHeartbeat,
   ServiceType,
@@ -33,6 +36,7 @@ import type {
 } from "./types.js";
 import type { EvalSummary, KilnStore } from "./store.js";
 import { MOCK_USER } from "./mock.js";
+import { decryptSecretValue, encryptSecretValue } from "./secrets.js";
 
 interface RunWithConfigRow extends RunRow {
   config: EvalConfig;
@@ -196,6 +200,80 @@ export class PostgresKilnStore implements KilnStore {
 
   async deleteSession(tokenHash: string): Promise<void> {
     await this.query("DELETE FROM auth_sessions WHERE token_hash = $1", [tokenHash]);
+  }
+
+  async upsertProductSecrets(input: {
+    userId: string;
+    scopeType: ProductSecretScopeType;
+    scopeId: string;
+    values: Record<string, string>;
+  }): Promise<ProductSecretSummary[]> {
+    const entries = Object.entries(input.values).filter(([, value]) => value.length > 0);
+    if (entries.length === 0) return this.listProductSecretSummaries(input.userId, input.scopeType, input.scopeId);
+    const client = await this.pool.connect();
+    try {
+      await this.schemaReady;
+      await client.query("BEGIN");
+      for (const [name, value] of entries) {
+        await client.query(
+          `INSERT INTO product_secrets (user_id, scope_type, scope_id, name, value_cipher)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (user_id, scope_type, scope_id, name) DO UPDATE
+           SET value_cipher = EXCLUDED.value_cipher, updated_at = now()`,
+          [input.userId, input.scopeType, input.scopeId, name, encryptSecretValue(value)],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+    return this.listProductSecretSummaries(input.userId, input.scopeType, input.scopeId);
+  }
+
+  async deleteProductSecrets(input: {
+    userId: string;
+    scopeType: ProductSecretScopeType;
+    scopeId: string;
+    names?: string[];
+  }): Promise<void> {
+    if (input.names && input.names.length === 0) return;
+    await this.query(
+      input.names
+        ? `DELETE FROM product_secrets
+           WHERE user_id = $1 AND scope_type = $2 AND scope_id = $3 AND name = ANY($4)`
+        : `DELETE FROM product_secrets
+           WHERE user_id = $1 AND scope_type = $2 AND scope_id = $3`,
+      input.names ? [input.userId, input.scopeType, input.scopeId, input.names] : [input.userId, input.scopeType, input.scopeId],
+    );
+  }
+
+  async listProductSecretSummaries(userId: string, scopeType: ProductSecretScopeType, scopeId: string): Promise<ProductSecretSummary[]> {
+    const result = await this.query<ProductSecretRow>(
+      `SELECT * FROM product_secrets
+       WHERE user_id = $1 AND scope_type = $2 AND scope_id = $3
+       ORDER BY name ASC`,
+      [userId, scopeType, scopeId],
+    );
+    return result.rows.map((row) => ({
+      scopeType: row.scope_type as ProductSecretScopeType,
+      scopeId: row.scope_id,
+      name: row.name,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  async getProductSecretValues(userId: string, scopeType: ProductSecretScopeType, scopeId: string): Promise<Record<string, string>> {
+    const result = await this.query<ProductSecretRow>(
+      `SELECT * FROM product_secrets
+       WHERE user_id = $1 AND scope_type = $2 AND scope_id = $3
+       ORDER BY name ASC`,
+      [userId, scopeType, scopeId],
+    );
+    return Object.fromEntries(result.rows.map((row) => [row.name, decryptSecretValue(row.value_cipher)]));
   }
 
   async createEval(userId: string, config: EvalConfig): Promise<Eval> {
@@ -424,7 +502,11 @@ export class PostgresKilnStore implements KilnStore {
   }
 
   async deleteOzJob(jobId: string): Promise<void> {
+    const job = await this.getOzJob(jobId);
     await this.query("DELETE FROM oz_jobs WHERE id::text = $1", [jobId]);
+    if (job) {
+      await this.deleteProductSecrets({ userId: job.userId, scopeType: "oz_job", scopeId: jobId });
+    }
   }
 
   async appendOzEvent(event: OzEvent): Promise<OzEvent> {

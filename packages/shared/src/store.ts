@@ -9,6 +9,8 @@ import type {
   OzEvent,
   OzJob,
   OzMode,
+  ProductSecretScopeType,
+  ProductSecretSummary,
   RunResult,
   ServiceHeartbeat,
   ServiceType,
@@ -16,12 +18,14 @@ import type {
 } from "./types.js";
 import { MOCK_EVAL, MOCK_RUN, MOCK_RUN_ERROR, MOCK_RUN_FIXED, MOCK_USER } from "./mock.js";
 import { PostgresKilnStore } from "./postgres-store.js";
+import { decryptSecretValue, encryptSecretValue } from "./secrets.js";
 
 interface StoreState {
   users: User[];
   sessions: AuthSession[];
   evals: Eval[];
   runs: RunResult[];
+  productSecrets: ProductSecretRecord[];
   ozJobs: OzJob[];
   ozEvents: OzEvent[];
   ozArtifacts: OzArtifact[];
@@ -43,6 +47,11 @@ interface AuthSession {
   createdAt: string;
 }
 
+interface ProductSecretRecord extends ProductSecretSummary {
+  userId: string;
+  valueCipher: string;
+}
+
 export interface EvalSummary {
   id: string;
   title: string;
@@ -57,6 +66,20 @@ export interface KilnStore {
   createSession(tokenHash: string, userId: string, expiresAt: string): Promise<void>;
   getSessionUserId(tokenHash: string): Promise<string | null>;
   deleteSession(tokenHash: string): Promise<void>;
+  upsertProductSecrets(input: {
+    userId: string;
+    scopeType: ProductSecretScopeType;
+    scopeId: string;
+    values: Record<string, string>;
+  }): Promise<ProductSecretSummary[]>;
+  deleteProductSecrets(input: {
+    userId: string;
+    scopeType: ProductSecretScopeType;
+    scopeId: string;
+    names?: string[];
+  }): Promise<void>;
+  listProductSecretSummaries(userId: string, scopeType: ProductSecretScopeType, scopeId: string): Promise<ProductSecretSummary[]>;
+  getProductSecretValues(userId: string, scopeType: ProductSecretScopeType, scopeId: string): Promise<Record<string, string>>;
   createEval(userId: string, config: EvalConfig): Promise<Eval>;
   getEval(idOrShareToken: string): Promise<Eval | null>;
   listEvals(userId: string): Promise<EvalSummary[]>;
@@ -99,6 +122,7 @@ function defaultState(): StoreState {
     sessions: [],
     evals: [MOCK_EVAL],
     runs: [MOCK_RUN, MOCK_RUN_FIXED, MOCK_RUN_ERROR],
+    productSecrets: [],
     ozJobs: [],
     ozEvents: [],
     ozArtifacts: [],
@@ -169,6 +193,72 @@ export class JsonKilnStore implements KilnStore {
     if (next.length === state.sessions.length) return;
     state.sessions = next;
     await this.persist(state);
+  }
+
+  async upsertProductSecrets(input: {
+    userId: string;
+    scopeType: ProductSecretScopeType;
+    scopeId: string;
+    values: Record<string, string>;
+  }): Promise<ProductSecretSummary[]> {
+    const state = await this.load();
+    const now = nowIso();
+    for (const [name, value] of Object.entries(input.values)) {
+      if (!value) continue;
+      const existing = state.productSecrets.find((secret) =>
+        secret.userId === input.userId &&
+        secret.scopeType === input.scopeType &&
+        secret.scopeId === input.scopeId &&
+        secret.name === name
+      );
+      if (existing) {
+        existing.valueCipher = encryptSecretValue(value);
+        existing.updatedAt = now;
+      } else {
+        state.productSecrets.push({
+          userId: input.userId,
+          scopeType: input.scopeType,
+          scopeId: input.scopeId,
+          name,
+          valueCipher: encryptSecretValue(value),
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+    await this.persist(state);
+    return this.listProductSecretSummaries(input.userId, input.scopeType, input.scopeId);
+  }
+
+  async deleteProductSecrets(input: {
+    userId: string;
+    scopeType: ProductSecretScopeType;
+    scopeId: string;
+    names?: string[];
+  }): Promise<void> {
+    const state = await this.load();
+    const names = input.names ? new Set(input.names) : null;
+    state.productSecrets = state.productSecrets.filter((secret) => {
+      const scoped = secret.userId === input.userId && secret.scopeType === input.scopeType && secret.scopeId === input.scopeId;
+      if (!scoped) return true;
+      return names ? !names.has(secret.name) : false;
+    });
+    await this.persist(state);
+  }
+
+  async listProductSecretSummaries(userId: string, scopeType: ProductSecretScopeType, scopeId: string): Promise<ProductSecretSummary[]> {
+    const state = await this.load();
+    return state.productSecrets
+      .filter((secret) => secret.userId === userId && secret.scopeType === scopeType && secret.scopeId === scopeId)
+      .map(({ userId: _userId, valueCipher: _valueCipher, ...summary }) => summary)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async getProductSecretValues(userId: string, scopeType: ProductSecretScopeType, scopeId: string): Promise<Record<string, string>> {
+    const state = await this.load();
+    return Object.fromEntries(state.productSecrets
+      .filter((secret) => secret.userId === userId && secret.scopeType === scopeType && secret.scopeId === scopeId)
+      .map((secret) => [secret.name, decryptSecretValue(secret.valueCipher)]));
   }
 
   async createEval(userId: string, config: EvalConfig): Promise<Eval> {
@@ -306,6 +396,7 @@ export class JsonKilnStore implements KilnStore {
         sessions: parsed.sessions ?? [],
         evals: parsed.evals ?? [MOCK_EVAL],
         runs: parsed.runs ?? [MOCK_RUN, MOCK_RUN_FIXED, MOCK_RUN_ERROR],
+        productSecrets: parsed.productSecrets ?? [],
         ozJobs: parsed.ozJobs ?? [],
         ozEvents: parsed.ozEvents ?? [],
         ozArtifacts: parsed.ozArtifacts ?? [],
@@ -372,10 +463,16 @@ export class JsonKilnStore implements KilnStore {
 
   async deleteOzJob(jobId: string): Promise<void> {
     const current = await this.load();
+    const job = current.ozJobs.find((item) => item.id === jobId);
     current.ozJobs = current.ozJobs.filter((job) => job.id !== jobId);
     current.ozEvents = current.ozEvents.filter((event) => event.jobId !== jobId);
     current.ozArtifacts = current.ozArtifacts.filter((artifact) => artifact.jobId !== jobId);
     current.ozFeedbackEvents = current.ozFeedbackEvents.filter((event) => event.jobId !== jobId);
+    if (job) {
+      current.productSecrets = current.productSecrets.filter((secret) =>
+        !(secret.userId === job.userId && secret.scopeType === "oz_job" && secret.scopeId === jobId)
+      );
+    }
     await this.persist(current);
   }
 

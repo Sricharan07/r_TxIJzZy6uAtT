@@ -82,6 +82,31 @@ describe("JsonKilnStore", () => {
     }
   });
 
+  it("stores product secrets separately from configs and returns summaries without values", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kiln-store-secrets-test-"));
+    try {
+      const file = join(dir, "data.json");
+      const store = new JsonKilnStore(file);
+      const user = await store.getOrCreateDevUser();
+      await store.upsertProductSecrets({
+        userId: user.id,
+        scopeType: "oz_job",
+        scopeId: "job-1",
+        values: { PRODUCT_API_KEY: "secret-value" },
+      });
+
+      const summaries = await store.listProductSecretSummaries(user.id, "oz_job", "job-1");
+      expect(summaries).toEqual([expect.objectContaining({ name: "PRODUCT_API_KEY" })]);
+      expect(JSON.stringify(summaries)).not.toContain("secret-value");
+      expect(await store.getProductSecretValues(user.id, "oz_job", "job-1")).toEqual({ PRODUCT_API_KEY: "secret-value" });
+
+      const raw = await import("node:fs/promises").then((fs) => fs.readFile(file, "utf8"));
+      expect(raw).not.toContain("secret-value");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("selects Postgres only when DATABASE_URL is configured", () => {
     const databaseUrl = process.env.DATABASE_URL;
     try {

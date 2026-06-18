@@ -10,6 +10,7 @@ type ExecuteRun = (
     runId: string;
     evalId: string;
     evalTitle: string;
+    productEnv?: Record<string, string>;
     onEvent(event: AgentEvent): Promise<void>;
   },
 ) => Promise<RunResult>;
@@ -141,10 +142,12 @@ export async function enqueueRun(evalRecord: Eval, run: RunResult): Promise<void
       const existing = await getStore().getRun(run.id);
       if (existing?.status === "canceled") return;
       await saveStatus(run, "running");
+      const productEnv = await getStore().getProductSecretValues(evalRecord.userId, "eval", evalRecord.id);
       const result = await executeRun(evalRecord.config, {
         runId: run.id,
         evalId: evalRecord.id,
         evalTitle: run.evalTitle,
+        productEnv,
         async onEvent(event) {
           const current = await getStore().getRun(run.id);
           if (!current || current.status === "canceled") throw new Error("Run was canceled.");

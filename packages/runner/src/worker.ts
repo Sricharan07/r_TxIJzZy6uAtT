@@ -36,6 +36,7 @@ import { crawlUrl } from "./context/crawler.js";
 import { cloneRepo } from "./context/github.js";
 import {
   missingRequiredProductEnv,
+  type ProductEnvValues,
   redactProductEnvValues,
   withScopedEnv,
 } from "./product-env.js";
@@ -49,6 +50,8 @@ export interface ExecuteRunOptions {
   sandbox?: RunnerSandbox;
   /** Test seam for exercising timeout/error behavior without a live agent CLI. */
   agent?: Agent;
+  /** Scoped product env loaded from encrypted eval secrets. */
+  productEnv?: ProductEnvValues;
 }
 
 interface RunJob {
@@ -183,9 +186,9 @@ function stepScope(phase: "setup" | "preflight" | "cleanup"): ProductEnvScope {
   return phase === "preflight" ? "setup" : phase;
 }
 
-function stepError(config: EvalConfig, phase: string, step: ProductCommandStep, code: number, stdout: string, stderr: string): Error {
+function stepError(config: EvalConfig, phase: string, step: ProductCommandStep, code: number, stdout: string, stderr: string, productEnv: ProductEnvValues): Error {
   const output = [stdout.trim(), stderr.trim() ? `[stderr]\n${stderr.trim()}` : ""].filter(Boolean).join("\n");
-  const redacted = redactProductEnvValues(config, clipOutput(output));
+  const redacted = redactProductEnvValues(config, clipOutput(output), productEnv);
   return new Error(`Product ${phase} step "${step.name}" failed with code ${code}.${redacted ? `\n${redacted}` : ""}`);
 }
 
@@ -276,25 +279,26 @@ function packagePreflightSteps(config: EvalConfig): ProductCommandStep[] {
     }));
 }
 
-function redactRunEvent(config: EvalConfig, event: AgentEvent): AgentEvent {
-  const text = redactProductEnvValues(config, event.text);
-  const annotation = event.annotation === undefined ? undefined : redactProductEnvValues(config, event.annotation);
+function redactRunEvent(config: EvalConfig, productEnv: ProductEnvValues, event: AgentEvent): AgentEvent {
+  const text = redactProductEnvValues(config, event.text, productEnv);
+  const annotation = event.annotation === undefined ? undefined : redactProductEnvValues(config, event.annotation, productEnv);
   if (text === event.text && annotation === event.annotation) return event;
   return { ...event, text, ...(annotation === undefined ? {} : { annotation }) };
 }
 
-function redactJsonValue<T>(config: EvalConfig, value: T): T {
+function redactJsonValue<T>(config: EvalConfig, productEnv: ProductEnvValues, value: T): T {
   if (value === undefined || value === null) return value;
-  return JSON.parse(redactProductEnvValues(config, JSON.stringify(value))) as T;
+  return JSON.parse(redactProductEnvValues(config, JSON.stringify(value), productEnv)) as T;
 }
 
 async function emitRunEvent(
   config: EvalConfig,
+  productEnv: ProductEnvValues,
   events: AgentEvent[],
   onEvent: ExecuteRunOptions["onEvent"] | undefined,
   event: AgentEvent,
 ): Promise<void> {
-  const redacted = redactRunEvent(config, event);
+  const redacted = redactRunEvent(config, productEnv, event);
   events.push(redacted);
   await onEvent?.(redacted);
 }
@@ -361,14 +365,15 @@ function sandboxWithProductEnv(
   sandbox: RunnerSandbox,
   config: EvalConfig,
   scope: ProductEnvScope,
+  productEnv: ProductEnvValues,
 ): RunnerSandbox {
   return {
     id: sandbox.id,
     boot: () => sandbox.boot(),
     writeFile: (path, contents) => sandbox.writeFile(path, contents),
-    exec: (cmd, cwd, options) => sandbox.exec(withScopedEnv(config, scope, cmd), cwd, options),
+    exec: (cmd, cwd, options) => sandbox.exec(withScopedEnv(config, scope, cmd, [], productEnv), cwd, options),
     execStreaming: (cmd, cwd, onLine, options) =>
-      sandbox.execStreaming(withScopedEnv(config, scope, cmd), cwd, onLine, options),
+      sandbox.execStreaming(withScopedEnv(config, scope, cmd, [], productEnv), cwd, onLine, options),
     readFile: (path) => sandbox.readFile(path),
     httpGet: (url) => sandbox.httpGet(url),
     httpRequest: (request) => sandbox.httpRequest(request),
@@ -383,6 +388,7 @@ async function runProductSteps({
   steps,
   events,
   onEvent,
+  productEnv,
 }: {
   config: EvalConfig;
   sandbox: RunnerSandbox;
@@ -390,17 +396,18 @@ async function runProductSteps({
   steps: ProductCommandStep[];
   events: AgentEvent[];
   onEvent?: ExecuteRunOptions["onEvent"];
+  productEnv: ProductEnvValues;
 }): Promise<void> {
   const scope = stepScope(phase);
   for (const step of steps) {
-    await emitRunEvent(config, events, onEvent, {
+    await emitRunEvent(config, productEnv, events, onEvent, {
       t: 0,
       kind: "command",
       text: `Product ${phase}: ${step.name}`,
     });
-    const result = await sandbox.exec(withScopedEnv(config, scope, step.command), step.cwd);
+    const result = await sandbox.exec(withScopedEnv(config, scope, step.command, [], productEnv), step.cwd);
     if (result.code !== 0) {
-      throw stepError(config, phase, step, result.code, result.stdout, result.stderr);
+      throw stepError(config, phase, step, result.code, result.stdout, result.stderr, productEnv);
     }
   }
 }
@@ -426,6 +433,7 @@ export async function executeRun(
   const startedAt = new Date().toISOString();
 
   const sandbox = options.sandbox ?? createSandbox(id);
+  const productEnv = options.productEnv ?? {};
   let events: AgentEvent[] = [];
   let agentStreamedEventCount = 0;
   let verdicts: Verdict[] = [];
@@ -437,7 +445,7 @@ export async function executeRun(
   let booted = false;
 
   try {
-    const missingEnv = missingRequiredProductEnv(config);
+    const missingEnv = missingRequiredProductEnv(config, productEnv);
     if (missingEnv.length) {
       throw new Error(`Missing required product environment variables: ${missingEnv.join(", ")}.`);
     }
@@ -451,6 +459,7 @@ export async function executeRun(
       steps: runtimePreflightSteps(config),
       events,
       onEvent: options.onEvent,
+      productEnv,
     });
     await runProductSteps({
       config,
@@ -459,6 +468,7 @@ export async function executeRun(
       steps: [...packageSetupSteps(config), ...(config.productProfile?.setupSteps ?? [])],
       events,
       onEvent: options.onEvent,
+      productEnv,
     });
     await runProductSteps({
       config,
@@ -467,6 +477,7 @@ export async function executeRun(
       steps: [...packagePreflightSteps(config), ...(config.productProfile?.preflightChecks ?? [])],
       events,
       onEvent: options.onEvent,
+      productEnv,
     });
 
     const prompt = await assemblePrompt(config);
@@ -475,11 +486,11 @@ export async function executeRun(
     const run = await withTimeout(
       agent.startTask({
         config,
-        sandbox,
+        sandbox: sandboxWithProductEnv(sandbox, config, "agent", productEnv),
         prompt,
         async onEvent(event) {
           agentStreamedEventCount += 1;
-          await emitRunEvent(config, events, options.onEvent, event);
+          await emitRunEvent(config, productEnv, events, options.onEvent, event);
         },
       }),
       config.metadata.timeoutSec,
@@ -488,7 +499,7 @@ export async function executeRun(
 
     if (agentStreamedEventCount === 0) {
       for (const event of run.events) {
-        await emitRunEvent(config, events, options.onEvent, event);
+        await emitRunEvent(config, productEnv, events, options.onEvent, event);
       }
     }
     tokens = run.tokens;
@@ -496,7 +507,7 @@ export async function executeRun(
 
     // Grade the finished sandbox (Decision 5). The grader inspects the same
     // SandboxHandle the agent mutated and returns one verdict per assertion.
-    const grading = await gradeWithReport(config, sandboxWithProductEnv(sandbox, config, "assertion"), {
+    const grading = await gradeWithReport(config, sandboxWithProductEnv(sandbox, config, "assertion", productEnv), {
       runId: id,
       events,
       runStats: {
@@ -505,8 +516,8 @@ export async function executeRun(
         tokens,
       },
     });
-    verdicts = grading.verdicts.map((verdict) => redactJsonValue(config, verdict));
-    gradeReport = redactJsonValue(config, grading.gradeReport);
+    verdicts = grading.verdicts.map((verdict) => redactJsonValue(config, productEnv, verdict));
+    gradeReport = redactJsonValue(config, productEnv, grading.gradeReport);
     status = "completed";
   } catch (err) {
     // Decision 18: classify our own failures as platform errors.
@@ -517,7 +528,7 @@ export async function executeRun(
     }
     totalSteps = Math.max(totalSteps, stepCount(events));
     errorType = isTimeoutFailure(err) ? "timeout" : "platform";
-    await emitRunEvent(config, events, options.onEvent, {
+    await emitRunEvent(config, productEnv, events, options.onEvent, {
       t: 0,
       kind: "fail",
       text: "Run failed before completion",
@@ -533,6 +544,7 @@ export async function executeRun(
           steps: config.productProfile?.cleanupSteps ?? [],
           events,
           onEvent: options.onEvent,
+          productEnv,
         });
       }
     } catch (err) {
@@ -540,7 +552,7 @@ export async function executeRun(
         status = "errored";
         errorType = "platform";
       }
-      await emitRunEvent(config, events, options.onEvent, {
+      await emitRunEvent(config, productEnv, events, options.onEvent, {
         t: 0,
         kind: "fail",
         text: "Product cleanup failed",
@@ -554,7 +566,7 @@ export async function executeRun(
       if (status !== "errored") {
         status = "errored";
         errorType = "platform";
-        await emitRunEvent(config, events, options.onEvent, {
+        await emitRunEvent(config, productEnv, events, options.onEvent, {
           t: 0,
           kind: "fail",
           text: "Sandbox teardown failed",
@@ -620,10 +632,12 @@ export async function startWorker(): Promise<void> {
       if (existingRun.status === "canceled") return existingRun;
       if (existingRun.status !== "pending" && existingRun.status !== "running") return existingRun;
       await store.saveRun({ ...existingRun, status: "running", startedAt: new Date().toISOString() });
+      const productEnv = await store.getProductSecretValues(evalRecord.userId, "eval", evalRecord.id);
       const result = await executeRun(evalRecord.config, {
         runId: existingRun.id,
         evalId: evalRecord.id,
         evalTitle: existingRun.evalTitle,
+        productEnv,
         async onEvent(event) {
           const current = await store.getRun(existingRun.id);
           if (!current || current.status === "canceled") throw new Error("Run was canceled.");

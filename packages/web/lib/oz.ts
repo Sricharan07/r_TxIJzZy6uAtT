@@ -74,15 +74,25 @@ function validateSuiteDraft(suiteDraft: OzSuiteDraft | undefined): string[] {
   return errors;
 }
 
-function missingSecretsFor(job: OzJob): string[] {
+function envValue(name: string, values: Record<string, string>): string | undefined {
+  return values[name] || process.env[name];
+}
+
+async function jobSecretValues(job: OzJob): Promise<Record<string, string>> {
+  return getStore().getProductSecretValues(job.userId, "oz_job", job.id);
+}
+
+async function missingSecretsFor(job: OzJob): Promise<string[]> {
+  const values = await jobSecretValues(job);
   return (job.state.productProfile?.requiredEnv ?? [])
-    .filter((env) => env.required !== false && !process.env[env.name])
+    .filter((env) => env.required !== false)
+    .filter((env) => !envValue(env.name, values))
     .map((env) => env.name);
 }
 
 async function refreshVerification(job: OzJob): Promise<OzJob> {
   if (!job.state.verification) return job;
-  const missingSecrets = missingSecretsFor(job);
+  const missingSecrets = await missingSecretsFor(job);
   const current = job.state.verification.missingSecrets;
   if (current.length === missingSecrets.length && current.every((name, index) => name === missingSecrets[index])) return job;
   const next: OzJob = {
@@ -100,7 +110,7 @@ async function refreshVerification(job: OzJob): Promise<OzJob> {
 }
 
 async function assertRunReadiness(job: OzJob): Promise<void> {
-  const missingSecrets = missingSecretsFor(job);
+  const missingSecrets = await missingSecretsFor(job);
   const blockers: string[] = [];
   if (missingSecrets.length > 0) {
     blockers.push(`Missing required product secrets: ${missingSecrets.join(", ")}`);
@@ -231,7 +241,7 @@ export async function editOzSuite(jobId: string, userId: string, suiteDraft: OzS
       verification: {
         schemaValid: true,
         runnable: true,
-        missingSecrets: missingSecretsFor(job),
+        missingSecrets: await missingSecretsFor(job),
         weakAssertions: [],
         hallucinationRisks: job.state.verification?.hallucinationRisks ?? [],
         destructiveRisks: [],
@@ -365,6 +375,15 @@ export async function runOzSuite(
       requestedRuns: options.requestedRuns ?? 1,
     });
     const evalRecord = await getStore().createEval(userId, evalConfig);
+    const secrets = await getStore().getProductSecretValues(userId, "oz_job", job.id);
+    if (Object.keys(secrets).length > 0) {
+      await getStore().upsertProductSecrets({
+        userId,
+        scopeType: "eval",
+        scopeId: evalRecord.id,
+        values: secrets,
+      });
+    }
     evalId ??= evalRecord.id;
     const runs = await createRunsForEval(getStore(), evalRecord);
     for (const run of runs) {

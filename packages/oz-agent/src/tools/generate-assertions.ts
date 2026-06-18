@@ -20,6 +20,31 @@ function isSecretLikeEnv(name: string): boolean {
   return /(KEY|TOKEN|SECRET|PASSWORD|BEARER|AUTH|CREDENTIAL)/i.test(name);
 }
 
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function grepLiteralAssertion(name: string, value: string): Assertion {
+  return {
+    type: "shell",
+    name,
+    config: { command: `grep -R -F -- ${shellSingleQuote(value)} src README.md package.json 2>/dev/null` },
+  };
+}
+
+function documentedSurfaceAssertions(profile: OzProductProfile): Assertion[] {
+  const urls = new Set<string>();
+  for (const api of profile.APIs) {
+    if (api.path && api.path !== "/") urls.add(api.path);
+    for (const item of api.evidence) {
+      for (const match of item.source.matchAll(/https?:\/\/[^\s)"']+/g)) urls.add(match[0].replace(/[),.]+$/g, ""));
+      for (const match of item.quote.matchAll(/https?:\/\/[^\s)"']+/g)) urls.add(match[0].replace(/[),.]+$/g, ""));
+    }
+  }
+  const candidates = [...urls].filter((item) => item.length >= 4).slice(0, 2);
+  return candidates.map((item) => grepLiteralAssertion(`Documented product surface is referenced: ${item}`, item));
+}
+
 function secretLeakAssertions(profile: OzProductProfile): Assertion[] {
   return profile.requiredEnv.filter((env) => isSecretLikeEnv(env.name)).map((env) => ({
     type: "shell" as const,
@@ -34,6 +59,9 @@ function scenarioAssertions(profile: OzProductProfile, scenario: OzScenario): As
   const assertions = [...scenario.assertions];
   const sdk = sdkAssertion(profile);
   if (sdk) assertions.push(sdk);
+  if (scenario.id === "first_successful_call" || scenario.id.includes("http")) {
+    assertions.push(...documentedSurfaceAssertions(profile));
+  }
   assertions.push(...secretLeakAssertions(profile));
   if (scenario.id.includes("auth")) {
     assertions.push({

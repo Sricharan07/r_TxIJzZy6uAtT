@@ -27,6 +27,17 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS product_secrets (
+  user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  scope_type    TEXT NOT NULL,
+  scope_id      TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  value_cipher  TEXT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, scope_type, scope_id, name)
+);
+
 -- Decision 4: eval config stored as JSONB; Decision 19: share_token for the config URL
 CREATE TABLE IF NOT EXISTS evals (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -145,6 +156,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_eval ON runs(eval_id);
 CREATE INDEX IF NOT EXISTS idx_verdicts_run ON verdicts(run_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_product_secrets_scope ON product_secrets(user_id, scope_type, scope_id);
 CREATE INDEX IF NOT EXISTS idx_oz_jobs_user ON oz_jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_oz_jobs_updated ON oz_jobs(updated_at);
 CREATE INDEX IF NOT EXISTS idx_oz_events_job ON oz_events(job_id, created_at);
@@ -168,6 +180,16 @@ export interface AuthSessionRow {
   user_id: string;
   expires_at: string;
   created_at: string;
+}
+
+export interface ProductSecretRow {
+  user_id: string;
+  scope_type: string;
+  scope_id: string;
+  name: string;
+  value_cipher: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface EvalRow {

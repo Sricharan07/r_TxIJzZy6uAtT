@@ -109,6 +109,28 @@ describe("Oz run lifecycle", () => {
     expect((await state.store!.getOzJob(job.id))?.state.approval?.status).toBe("pending");
   });
 
+  it("uses saved Oz job secrets and copies them to generated evals", async () => {
+    const { user, job } = await createReadyJob([
+      { name: "KILN_PRODUCT_TOKEN", scopes: ["agent", "assertion"], required: true },
+    ]);
+    await state.store!.upsertProductSecrets({
+      userId: user.id,
+      scopeType: "oz_job",
+      scopeId: job.id,
+      values: { KILN_PRODUCT_TOKEN: "job-secret" },
+    });
+
+    const refreshed = await refreshOwnedOzJob(job.id, user.id);
+    expect(refreshed.state.verification?.missingSecrets).toEqual([]);
+    const running = await runOzSuite(job.id, user.id, {});
+    const evalId = running.state.run?.evalId;
+
+    expect(evalId).toBeTruthy();
+    await expect(state.store!.getProductSecretValues(user.id, "eval", evalId!)).resolves.toEqual({
+      KILN_PRODUCT_TOKEN: "job-secret",
+    });
+  });
+
   it("blocks runs when runner infrastructure is unhealthy", async () => {
     vi.stubEnv("KILN_PRESENT_PRODUCT_TOKEN", "present");
     state.health.mockResolvedValue({
