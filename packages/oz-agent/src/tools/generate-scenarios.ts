@@ -62,14 +62,17 @@ export const generateScenariosTool: OzTool<GenerateScenariosInput, { scenarios: 
     const product = profile.productName;
     const hasSdk = profile.sdks.length > 0;
     const hasApi = profile.APIs.length > 0 || profile.productType.includes("api") || profile.auth !== undefined;
+    const firstCallTask = hasApi
+      ? `Build a minimal Node integration for ${product} using the documented HTTP API or curl examples. If SDK docs are also present, leave SDK import testing to the separate SDK scenario. Initialize request headers from environment variables and make the simplest safe successful call or local dry-run.`
+      : hasSdk
+        ? `Build a minimal Node integration for ${product}. Use the documented SDK ${profile.sdks[0]?.packageName}, initialize the client with documented environment variables, make the simplest safe successful call or local dry-run, and write the observed result to src/oz-result.json.`
+        : `Build a minimal Node integration for ${product} using the documented HTTP API or curl examples. Do not search package registries unless the docs name an SDK. Initialize request headers from environment variables and make the simplest safe successful call or local dry-run.`;
     const scenarios: OzScenario[] = [
       scenario(
         "first_successful_call",
         "First successful call",
         "Every integration starts with installing the SDK or calling the API successfully.",
-        nodeEntrypointTask(hasSdk
-          ? `Build a minimal Node integration for ${product}. Use the documented SDK ${profile.sdks[0]?.packageName}, initialize the client with documented environment variables, make the simplest safe successful call or local dry-run, and write the observed result to src/oz-result.json.`
-          : `Build a minimal Node integration for ${product} using the documented HTTP API or curl examples. Do not search package registries unless the docs name an SDK. Initialize request headers from environment variables and make the simplest safe successful call or local dry-run.`),
+        nodeEntrypointTask(firstCallTask),
         env,
         profile.evidence[0]?.quote ?? "Product docs were discovered.",
       ),

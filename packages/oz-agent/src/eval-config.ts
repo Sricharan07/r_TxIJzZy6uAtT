@@ -35,7 +35,8 @@ function primarySdkPackage(state: OzAgentState, language: Language): string | un
   return state.productProfile?.sdks.find((sdk) => sdk.language === language)?.packageName;
 }
 
-function packagesForLanguage(packages: ProductPackage[] | undefined, language: Language, primarySdk?: string): ProductPackage[] {
+function packagesForScenario(packages: ProductPackage[] | undefined, language: Language, scenario: OzScenario, primarySdk?: string): ProductPackage[] {
+  if (!scenario.id.includes("sdk")) return [];
   const manager = managerForLanguage(language);
   if (!manager) return [];
   const compatible = (packages ?? []).filter((pkg) => pkg.manager === manager);
@@ -61,7 +62,7 @@ export function scenarioToEvalConfig({
     ? {
         ...productProfile,
         runtime: { ...productProfile.runtime, language: language as Language },
-        packages: packagesForLanguage(productProfile.packages, language as Language, primarySdk),
+        packages: packagesForScenario(productProfile.packages, language as Language, scenario, primarySdk),
         requiredEnv: mergeEnvRequirements(productProfile.requiredEnv, scenario.requiredEnv),
         setupSteps: [...(productProfile.setupSteps ?? []), ...scenario.setupSteps],
         cleanupSteps: [...(productProfile.cleanupSteps ?? []), ...scenario.cleanupSteps],

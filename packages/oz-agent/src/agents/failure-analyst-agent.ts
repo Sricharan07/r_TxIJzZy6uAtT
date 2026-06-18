@@ -48,14 +48,14 @@ function classify(run: RunResult): FailureCode {
   const text = runText(run);
   if (run.errorType === "timeout" || /command timed out|run exceeded .* timeout/.test(text)) return "platform_timeout";
   if (/missing required product environment variables/.test(text)) return "missing_required_env";
-  if (/cli exited with code|agent cli|claude code cli|codex cli|cursor cli/.test(text)) return "agent_cli_failure";
   if (run.errorType === "platform" && /sandbox|firecracker|guest|ssh|manager unavailable|teardown/.test(text)) return "sandbox_failure";
-  if (run.errorType === "platform" && run.verdicts.length === 0) return "agent_cli_failure";
   if (runtimeSucceeded(run, text) && failedOnlyAdvisoryOrPatternChecks(run)) return "harness_issue";
+  if (/cannot find module|package|install|glibc|native binding|product (setup|preflight) step/.test(text)) return "environment_issue";
+  if (/not a function|does not export|undefined method|sdk/.test(text)) return "sdk_mismatch";
+  if (/cli exited with code|agent cli|claude code cli|codex cli|cursor cli/.test(text)) return "agent_cli_failure";
+  if (run.errorType === "platform" && run.verdicts.length === 0) return "agent_cli_failure";
   if (/unauthorized|forbidden|\b401\b|\b403\b|invalid (api key|token|credential)|missing (api key|token|credential)|authentication failed|wrong auth/.test(text)) return "auth_confusion";
   if (/\b4\d\d\b|\b5\d\d\b|rate limit|quota|bad request|unprocessable/.test(text)) return "product_api_error";
-  if (/cannot find module|package|install|glibc|native binding/.test(text)) return "environment_issue";
-  if (/not a function|does not export|undefined method|sdk/.test(text)) return "sdk_mismatch";
   if (/expected.*not found|missing docs|not documented/.test(text)) return "docs_missing";
   if (/ambiguous|conflicting|two names/.test(text)) return "docs_ambiguous";
   if (/test suite|assertion/.test(text)) return "test_suite_issue";

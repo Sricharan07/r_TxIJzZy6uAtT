@@ -191,9 +191,13 @@ describe("OzOrchestrator", () => {
     expect(ready.state.suiteDraft?.scenarios.some((scenario) => scenario.id === "sdk_import_init")).toBe(true);
     const firstCall = ready.state.suiteDraft?.scenarios.find((scenario) => scenario.id === "first_successful_call");
     expect(firstCall).toBeDefined();
-    const evalConfig = scenarioToEvalConfig({ state: ready.state, scenario: firstCall! });
-    expect(evalConfig.productProfile?.packages?.map((pkg) => `${pkg.manager}:${pkg.name}`)).toEqual(["npm:@moss-dev/moss"]);
-    expect(evalConfig.context[0]?.content).toContain("Primary SDK for this node scenario: @moss-dev/moss");
+    const firstCallConfig = scenarioToEvalConfig({ state: ready.state, scenario: firstCall! });
+    expect(firstCallConfig.productProfile?.packages).toEqual([]);
+    expect(firstCallConfig.context[0]?.content).toContain("Primary SDK for this node scenario: @moss-dev/moss");
+    const sdkScenario = ready.state.suiteDraft?.scenarios.find((scenario) => scenario.id === "sdk_import_init");
+    expect(sdkScenario).toBeDefined();
+    const sdkConfig = scenarioToEvalConfig({ state: ready.state, scenario: sdkScenario! });
+    expect(sdkConfig.productProfile?.packages?.map((pkg) => `${pkg.manager}:${pkg.name}`)).toEqual(["npm:@moss-dev/moss"]);
   });
 
   it("keeps Oz run observations compact", () => {
