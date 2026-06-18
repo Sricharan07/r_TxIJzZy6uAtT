@@ -12,9 +12,31 @@ function isAgent(value: unknown): value is AgentType {
   return value === "claude-code" || value === "codex" || value === "cursor";
 }
 
+function cookieNames(header: string | null): string[] {
+  if (!header) return [];
+  return header
+    .split(";")
+    .map((part) => part.trim().split("=", 1)[0])
+    .filter(Boolean)
+    .sort();
+}
+
 export async function POST(req: Request): Promise<Response> {
   const userId = await currentUserId();
-  if (!userId) return Response.json({ error: "GitHub sign-in required" }, { status: 401 });
+  if (!userId) {
+    const cookieHeader = req.headers.get("cookie");
+    const names = cookieNames(cookieHeader);
+    console.warn("Oz job creation rejected unauthenticated request", {
+      cookieNames: names,
+      hasKilnSessionCookie: names.includes("kiln_session"),
+      host: req.headers.get("host"),
+      origin: req.headers.get("origin"),
+      referer: req.headers.get("referer"),
+      secFetchMode: req.headers.get("sec-fetch-mode"),
+      secFetchSite: req.headers.get("sec-fetch-site"),
+    });
+    return Response.json({ error: "GitHub sign-in required" }, { status: 401 });
+  }
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;
