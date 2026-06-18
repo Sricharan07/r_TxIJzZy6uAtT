@@ -20,7 +20,7 @@ vi.mock("./system-health", () => ({
 
 import { scenarioToEvalConfig } from "@kiln/oz-agent";
 import { JsonKilnStore } from "@kiln/shared/store";
-import { OzRunBlockedError, refreshOwnedOzJob, runOzSuite, stopOzJob } from "./oz";
+import { deleteOzJob, OzRunBlockedError, refreshOwnedOzJob, runOzSuite, stopOzJob } from "./oz";
 
 function scenario(requiredEnv: OzProductProfile["requiredEnv"]): OzScenario {
   return {
@@ -93,6 +93,7 @@ describe("Oz run lifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     state.store = new JsonKilnStore(`/tmp/kiln-oz-web-${crypto.randomUUID()}.json`);
     state.health.mockResolvedValue({ ok: true, checks: [], blockers: [] });
   });
@@ -148,6 +149,11 @@ describe("Oz run lifecycle", () => {
   });
 
   it("stops Oz jobs without creating a product report", async () => {
+    vi.stubEnv("KILN_SANDBOX_MODE", "firecracker");
+    vi.stubEnv("KILN_FIRECRACKER_MANAGER_URL", "http://manager.test");
+    vi.stubEnv("KILN_FIRECRACKER_MANAGER_TOKEN", "secret");
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
     const { user, job, scenario: testScenario } = await createReadyJob();
     const evalRecord = await state.store!.createEval(user.id, scenarioToEvalConfig({
       state: job.state,
@@ -170,5 +176,37 @@ describe("Oz run lifecycle", () => {
     expect(stoppedRun?.status).toBe("canceled");
     expect(refreshed.status).toBe("stopped");
     expect(refreshed.state.report).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith(
+      `http://manager.test/v1/sandboxes/${encodeURIComponent(run.id)}`,
+      expect.objectContaining({
+        method: "DELETE",
+        headers: { Authorization: "Bearer secret" },
+      }),
+    );
+    expect(refreshed.state.error).toBe("Stopped by user before completion.");
+  });
+
+  it("does not delete terminated Oz jobs when hard sandbox cleanup fails", async () => {
+    vi.stubEnv("KILN_SANDBOX_MODE", "firecracker");
+    vi.stubEnv("KILN_FIRECRACKER_MANAGER_URL", "http://manager.test");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 503 })));
+    const { user, job, scenario: testScenario } = await createReadyJob();
+    const evalRecord = await state.store!.createEval(user.id, scenarioToEvalConfig({
+      state: job.state,
+      scenario: testScenario,
+      agentType: "claude-code",
+      requestedRuns: 1,
+    }));
+    const run = await state.store!.createRun(evalRecord);
+    await state.store!.saveOzJob({
+      ...job,
+      status: "running",
+      state: { ...job.state, approval: { status: "approved" }, run: { evalId: evalRecord.id, runIds: [run.id] } },
+    });
+
+    await expect(deleteOzJob(job.id, user.id, { stopFirst: true, deleteRunRecords: true })).rejects.toThrow(/Hard sandbox cleanup failed/);
+
+    expect(await state.store!.getOzJob(job.id)).not.toBeNull();
+    expect((await state.store!.getRun(run.id))?.status).toBe("canceled");
   });
 });

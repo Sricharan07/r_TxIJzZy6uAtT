@@ -557,9 +557,36 @@ function OzPageInner({ user }: OzClientProps) {
         </div>
         <div className="oz-header-actions">
           <span className={`oz-live-pill${live ? " active" : ""}`}><span />{live ? "Live" : "Idle"}</span>
-          {job.status === "running" && <button className="btn btn-ghost" disabled={busy} onClick={stopJob}>{busy ? "Stopping..." : "Stop"}</button>}
-          {job && <button className="btn btn-danger" disabled={busy} onClick={() => void deleteJob("TERMINATE")}>Terminate</button>}
-          {job && <button className="btn btn-ghost danger-text" disabled={busy} onClick={() => void deleteJob("DELETE")}>Delete</button>}
+          {job.status === "running" && (
+            <button
+              className="btn btn-ghost"
+              disabled={busy}
+              title="Cancel queued work and stop any active sandbox VM for this run."
+              onClick={stopJob}
+            >
+              {busy ? "Stopping..." : "Stop run"}
+            </button>
+          )}
+          {job.status === "running" && (
+            <button
+              className="btn btn-danger"
+              disabled={busy}
+              title="Stop active sandbox VMs, cancel queued work, and delete this job's run records."
+              onClick={() => void deleteJob("TERMINATE")}
+            >
+              Terminate & clean up
+            </button>
+          )}
+          {job.status !== "running" && (
+            <button
+              className="btn btn-ghost danger-text"
+              disabled={busy}
+              title="Delete this saved job record and its run data."
+              onClick={() => void deleteJob("DELETE")}
+            >
+              Delete record
+            </button>
+          )}
           <Link className="btn btn-ghost" href="/oz">New Oz Job</Link>
         </div>
       </div>

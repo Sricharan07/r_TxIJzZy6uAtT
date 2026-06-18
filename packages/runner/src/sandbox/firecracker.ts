@@ -307,7 +307,7 @@ export class FirecrackerSandbox implements RunnerSandbox {
 
   async teardown(): Promise<void> {
     if (this.state === "booted") {
-      await this.request(this.path(""), { method: "DELETE" });
+      await this.request(this.path(""), { method: "DELETE", headers: { "x-kiln-ignore-not-found": "1" } });
     }
     this.remoteId = null;
     this.state = "torn-down";
@@ -325,6 +325,7 @@ export class FirecrackerSandbox implements RunnerSandbox {
     headers.set("Content-Type", "application/json");
     if (this.token) headers.set("Authorization", `Bearer ${this.token}`);
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
+    if (response.status === 404 && headers.get("x-kiln-ignore-not-found") === "1") return undefined as T;
     if (!response.ok) {
       throw new Error(`Firecracker manager ${init.method ?? "GET"} ${path} failed: ${response.status} ${await response.text()}`);
     }

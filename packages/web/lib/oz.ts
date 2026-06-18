@@ -158,6 +158,72 @@ async function removeQueuedRuns(runIds: string[]): Promise<void> {
   }
 }
 
+interface SandboxCleanupResult {
+  attempted: number;
+  terminated: string[];
+  alreadyGone: string[];
+  failed: Array<{ runId: string; error: string }>;
+}
+
+function firecrackerSandboxMode(): string {
+  return process.env.KILN_SANDBOX_MODE ?? (process.env.NODE_ENV === "production" ? "firecracker" : "local");
+}
+
+function cleanupWarning(result: SandboxCleanupResult): string | null {
+  if (result.failed.length === 0) return null;
+  return `Hard sandbox cleanup failed for ${result.failed.length}/${result.attempted} run${result.attempted === 1 ? "" : "s"}.`;
+}
+
+function cleanupSuccessMessage(result: SandboxCleanupResult): string {
+  if (result.attempted === 0) return "Stopped by user.";
+  if (result.terminated.length > 0) {
+    return `Stopped by user. Hard-terminated ${result.terminated.length} active sandbox VM${result.terminated.length === 1 ? "" : "s"}.`;
+  }
+  return "Stopped by user. No active sandbox VM was present.";
+}
+
+async function hardTerminateRunSandboxes(runIds: string[]): Promise<SandboxCleanupResult> {
+  const result: SandboxCleanupResult = { attempted: 0, terminated: [], alreadyGone: [], failed: [] };
+  if (runIds.length === 0 || firecrackerSandboxMode() !== "firecracker") return result;
+
+  const managerUrl = process.env.KILN_FIRECRACKER_MANAGER_URL;
+  if (!managerUrl) {
+    result.failed = runIds.map((runId) => ({ runId, error: "KILN_FIRECRACKER_MANAGER_URL is required for Firecracker cleanup." }));
+    result.attempted = runIds.length;
+    return result;
+  }
+
+  const baseUrl = managerUrl.replace(/\/$/, "");
+  const token = process.env.KILN_FIRECRACKER_MANAGER_TOKEN;
+  const timeoutMs = Number(process.env.KILN_FIRECRACKER_TERMINATE_TIMEOUT_MS ?? 8_000);
+  await Promise.all(runIds.map(async (runId) => {
+    result.attempted += 1;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 8_000);
+    try {
+      const response = await fetch(`${baseUrl}/v1/sandboxes/${encodeURIComponent(runId)}`, {
+        method: "DELETE",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        signal: controller.signal,
+      });
+      if (response.status === 404) {
+        result.alreadyGone.push(runId);
+        return;
+      }
+      if (!response.ok) {
+        result.failed.push({ runId, error: `Firecracker manager returned HTTP ${response.status}.` });
+        return;
+      }
+      result.terminated.push(runId);
+    } catch (err) {
+      result.failed.push({ runId, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      clearTimeout(timer);
+    }
+  }));
+  return result;
+}
+
 export async function createOzJob(input: {
   userId: string;
   productUrl: string;
@@ -420,12 +486,14 @@ export async function stopOzJob(jobId: string, userId: string): Promise<OzJob> {
   const runIds = job.state.run?.runIds ?? [];
   await removeQueuedRuns(runIds);
   await getStore().stopRuns(runIds, "Stopped by user before completion.");
+  const sandboxCleanup = await hardTerminateRunSandboxes(runIds);
+  const warning = cleanupWarning(sandboxCleanup);
   const next: OzJob = {
     ...job,
     status: "stopped",
     state: {
       ...job.state,
-      error: "Stopped by user before completion.",
+      error: warning ? `Stopped by user before completion. ${warning}` : "Stopped by user before completion.",
       stoppedAt: new Date().toISOString(),
     },
   };
@@ -435,9 +503,9 @@ export async function stopOzJob(jobId: string, userId: string): Promise<OzJob> {
     jobId,
     kind: "job.stopped",
     phase: "stopped",
-    message: "Stopped by user.",
+    message: warning ?? cleanupSuccessMessage(sandboxCleanup),
     dedupeKey: `${jobId}:user-stop`,
-    payload: { severity: "warning" },
+    payload: { severity: warning ? "error" : "warning", sandboxCleanup },
   });
   return next;
 }
@@ -448,6 +516,19 @@ export async function deleteOzJob(jobId: string, userId: string, options: { stop
   if (options.stopFirst) {
     await removeQueuedRuns(runIds);
     await getStore().stopRuns(runIds, "Terminated by user.");
+    const sandboxCleanup = await hardTerminateRunSandboxes(runIds);
+    const warning = cleanupWarning(sandboxCleanup);
+    if (warning) {
+      await getStore().appendOzEvent({
+        jobId,
+        kind: "job.stopped",
+        phase: "stopped",
+        message: warning,
+        dedupeKey: `${jobId}:terminate-cleanup-failed`,
+        payload: { severity: "error", sandboxCleanup },
+      });
+      throw new Error(`${warning} The job was canceled but not deleted so the cleanup issue stays visible.`);
+    }
     activeJobs().delete(jobId);
   }
   if (options.deleteRunRecords) {

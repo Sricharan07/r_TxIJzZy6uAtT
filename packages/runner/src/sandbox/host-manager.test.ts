@@ -110,4 +110,25 @@ describe("Firecracker host manager API", () => {
       "teardown:run-24",
     ]);
   });
+
+  it("treats repeated sandbox teardown as idempotent", async () => {
+    const driver = new FakeDriver();
+    const server = createHostManagerServer(driver, "secret");
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+
+    const first = await fetch(`http://127.0.0.1:${port}/v1/sandboxes/missing-run`, {
+      method: "DELETE",
+      headers: { Authorization: "Bearer secret" },
+    });
+    const second = await fetch(`http://127.0.0.1:${port}/v1/sandboxes/missing-run`, {
+      method: "DELETE",
+      headers: { Authorization: "Bearer secret" },
+    });
+
+    expect(first.status).toBe(204);
+    expect(second.status).toBe(204);
+    expect(driver.calls).toEqual(["teardown:missing-run", "teardown:missing-run"]);
+  });
 });

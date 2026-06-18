@@ -83,7 +83,14 @@ export function RunningReport({ run }: { run: RunResult }) {
         </div>
         <div className="report-actions">
           <span className="live-chip">Streaming</span>
-          <button className="btn btn-ghost" disabled={stopping} onClick={stopRun}>{stopping ? "Stopping..." : "Stop"}</button>
+          <button
+            className="btn btn-ghost"
+            disabled={stopping}
+            title="Cancel this run and stop its active sandbox VM."
+            onClick={stopRun}
+          >
+            {stopping ? "Stopping..." : "Stop run"}
+          </button>
         </div>
       </div>
 

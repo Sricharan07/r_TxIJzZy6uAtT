@@ -75,6 +75,21 @@ describe("FirecrackerSandbox", () => {
     expect(createSandbox("remote")).toBeInstanceOf(FirecrackerSandbox);
   });
 
+  it("treats remote teardown as complete when the manager already removed the sandbox", async () => {
+    const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url.endsWith("/v1/sandboxes") && init.method === "POST") {
+        return Response.json({ sandboxId: "vm-removed" });
+      }
+      if (init.method === "DELETE") return new Response("missing", { status: 404 });
+      return Response.json({});
+    }) as typeof fetch;
+    const sandbox = new FirecrackerSandbox("run-removed", "https://manager.example", "token", fetchImpl);
+
+    await sandbox.boot();
+    await expect(sandbox.teardown()).resolves.toBeUndefined();
+  });
+
   it("streams local command output line-by-line", async () => {
     const sandbox = new LocalSandbox("stream-local");
     const lines: string[] = [];

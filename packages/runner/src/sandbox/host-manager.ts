@@ -357,7 +357,8 @@ export class ProcessFirecrackerDriver implements FirecrackerDriver {
   }
 
   async teardown(id: string): Promise<void> {
-    const vm = this.requireVm(id);
+    const vm = this.vms.get(id);
+    if (!vm) return;
     this.vms.delete(id);
     await stopProcess(vm.process);
     await runFile("ip", ["link", "del", "dev", vm.tapName]).catch(() => {});
