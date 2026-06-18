@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { OzArtifact, OzEvent, OzJob, OzMode, OzScenario, OzSuiteDraft, ProductSecretSummary } from "@kiln/shared";
 import { Badge } from "@/components/ui/badge";
@@ -70,6 +70,37 @@ const PHASES: Array<{ status: OzJob["status"]; label: string }> = [
 ];
 
 const TERMINAL = new Set<OzJob["status"]>(["awaiting_approval", "blocked", "failed", "complete", "stopped"]);
+const EVENT_FILTERS = [
+  { id: "milestones", label: "Milestones" },
+  { id: "all", label: "All" },
+  { id: "agent", label: "Agent" },
+  { id: "warnings", label: "Warnings" },
+  { id: "failures", label: "Failures" },
+] as const;
+
+type EventFilter = (typeof EVENT_FILTERS)[number]["id"];
+
+interface AgentProgressPayload {
+  type?: string;
+  subtype?: string;
+  estimated_tokens?: number;
+  estimated_tokens_delta?: number;
+  session_id?: string;
+}
+
+interface DisplayEvent {
+  id: string;
+  title: string;
+  message: string;
+  rawTitle: string;
+  rawMessage: string;
+  timeLabel: string;
+  tone: string;
+  category: "milestone" | "agent" | "warning" | "failure";
+  count: number;
+  rawEvents: OzEvent[];
+  isReasoning: boolean;
+}
 
 function confidence(n?: number): string {
   return `${Math.round((n ?? 0) * 100)}%`;
@@ -111,29 +142,115 @@ function eventTitle(event: OzEvent): string {
     .join(" ");
 }
 
-function eventMessage(event: OzEvent): string {
+function parseAgentProgress(event: OzEvent): AgentProgressPayload | null {
   const agentProgress = event.message.match(/^Agent progress:\s*(\{.*\})$/);
-  if (!agentProgress) return event.message;
+  if (!agentProgress) return null;
   try {
-    const payload = JSON.parse(agentProgress[1]) as {
-      type?: string;
-      subtype?: string;
-      estimated_tokens?: number;
-      estimated_tokens_delta?: number;
-      session_id?: string;
-    };
-    if (payload.type === "system" && payload.subtype === "thinking_tokens") {
-      const total = typeof payload.estimated_tokens === "number" ? payload.estimated_tokens.toLocaleString() : "unknown";
-      const delta = typeof payload.estimated_tokens_delta === "number" ? `+${payload.estimated_tokens_delta.toLocaleString()}` : "new";
-      return `Agent is reasoning. ${total} thinking tokens tracked (${delta} since the last update).`;
-    }
-    if (payload.type) {
-      return `Agent emitted ${payload.subtype ? `${payload.subtype.replaceAll("_", " ")} ` : ""}${payload.type} telemetry.`;
-    }
+    return JSON.parse(agentProgress[1]) as AgentProgressPayload;
   } catch {
-    return event.message;
+    return null;
+  }
+}
+
+function eventMessage(event: OzEvent): string {
+  const payload = parseAgentProgress(event);
+  if (!payload) return event.message;
+  if (payload.type === "system" && payload.subtype === "thinking_tokens") {
+    const total = typeof payload.estimated_tokens === "number" ? payload.estimated_tokens.toLocaleString() : "unknown";
+    const delta = typeof payload.estimated_tokens_delta === "number" ? `+${payload.estimated_tokens_delta.toLocaleString()}` : "new";
+    return `Agent is reasoning. ${total} thinking tokens tracked (${delta} since the last update).`;
+  }
+  if (payload.type) {
+    return `Agent emitted ${payload.subtype ? `${payload.subtype.replaceAll("_", " ")} ` : ""}${payload.type} telemetry.`;
   }
   return event.message;
+}
+
+function eventTimeLabel(event: OzEvent): string {
+  if (!event.createdAt) return "";
+  return new Date(event.createdAt).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function eventCategory(event: OzEvent, tone: string): DisplayEvent["category"] {
+  if (tone === "critical") return "failure";
+  if (tone === "warning") return "warning";
+  if (event.kind.startsWith("run.")) return "agent";
+  return "milestone";
+}
+
+function toDisplayEvent(event: OzEvent): DisplayEvent {
+  const tone = eventTone(event);
+  return {
+    id: event.id ?? `${event.kind}:${event.createdAt}:${event.message}`,
+    title: eventTitle(event),
+    message: eventMessage(event),
+    rawTitle: eventTitle(event),
+    rawMessage: event.message,
+    timeLabel: eventTimeLabel(event),
+    tone,
+    category: eventCategory(event, tone),
+    count: 1,
+    rawEvents: [event],
+    isReasoning: false,
+  };
+}
+
+function isReasoningTelemetry(event: OzEvent): boolean {
+  const payload = parseAgentProgress(event);
+  return payload?.type === "system" && payload.subtype === "thinking_tokens";
+}
+
+function reasoningDisplayEvent(group: OzEvent[]): DisplayEvent {
+  const first = group[0]!;
+  const latest = group.at(-1)!;
+  return {
+    id: `reasoning:${first.id ?? first.createdAt}:${latest.id ?? latest.createdAt}:${group.length}`,
+    title: "Agent is reasoning",
+    message: eventMessage(latest),
+    rawTitle: eventTitle(latest),
+    rawMessage: latest.message,
+    timeLabel: eventTimeLabel(latest),
+    tone: "info",
+    category: "agent",
+    count: group.length,
+    rawEvents: group,
+    isReasoning: true,
+  };
+}
+
+function buildDisplayEvents(source: OzEvent[]): DisplayEvent[] {
+  const display: DisplayEvent[] = [];
+  let reasoningGroup: OzEvent[] = [];
+  const flushReasoning = () => {
+    if (reasoningGroup.length > 0) {
+      display.push(reasoningDisplayEvent(reasoningGroup));
+      reasoningGroup = [];
+    }
+  };
+
+  for (const event of source) {
+    if (isReasoningTelemetry(event)) {
+      reasoningGroup.push(event);
+      continue;
+    }
+    flushReasoning();
+    display.push(toDisplayEvent(event));
+  }
+  flushReasoning();
+  return display;
+}
+
+function eventMatchesFilter(event: DisplayEvent, filter: EventFilter): boolean {
+  if (filter === "all") return true;
+  if (filter === "agent") return event.category === "agent";
+  if (filter === "warnings") return event.category === "warning";
+  if (filter === "failures") return event.category === "failure";
+  if (event.category === "agent") return event.isReasoning;
+  return true;
 }
 
 function phaseIndexForStatus(status: OzJob["status"]): number {
@@ -154,8 +271,9 @@ function OzPageInner({ user }: OzClientProps) {
   const [goal, setGoal] = useState("");
   const [job, setJob] = useState<OzJob | null>(null);
   const [events, setEvents] = useState<OzEvent[]>([]);
-  const [visibleEvents, setVisibleEvents] = useState<OzEvent[]>([]);
-  const [eventQueue, setEventQueue] = useState<OzEvent[]>([]);
+  const [eventFilter, setEventFilter] = useState<EventFilter>("milestones");
+  const [autoFollowFeed, setAutoFollowFeed] = useState(true);
+  const [pendingFeedUpdates, setPendingFeedUpdates] = useState(0);
   const [artifacts, setArtifacts] = useState<OzArtifact[]>([]);
   const [secretSummaries, setSecretSummaries] = useState<ProductSecretSummary[]>([]);
   const [secretInputs, setSecretInputs] = useState<Record<string, string>>({});
@@ -168,6 +286,7 @@ function OzPageInner({ user }: OzClientProps) {
   const [loadingJob, setLoadingJob] = useState(false);
   const [infraHealth, setInfraHealth] = useState<RunInfrastructureHealth | null>(null);
   const [runBlockers, setRunBlockers] = useState<string[]>([]);
+  const feedRef = useRef<HTMLDivElement | null>(null);
   const live = job ? !TERMINAL.has(job.status) : false;
   const signedIn = Boolean(user);
 
@@ -185,8 +304,8 @@ function OzPageInner({ user }: OzClientProps) {
     setDraftSuite(jobBody.job.state.suiteDraft ?? null);
     const nextEvents = eventsBody.events ?? [];
     setEvents(nextEvents);
-    setVisibleEvents(nextEvents.slice(-80));
-    setEventQueue([]);
+    setAutoFollowFeed(true);
+    setPendingFeedUpdates(0);
     setRunBlockers([]);
     return eventsBody.cursor ?? nextEvents.at(-1)?.id ?? null;
   }
@@ -217,7 +336,6 @@ function OzPageInner({ user }: OzClientProps) {
           setArtifacts(data.artifacts ?? []);
           setDraftSuite(data.job.state.suiteDraft ?? null);
           setEvents((current) => mergeEvents(current, data.events ?? []));
-          setEventQueue((current) => mergeEvents(current, data.events ?? []));
           if (TERMINAL.has(data.job.status)) source?.close();
         });
         source.addEventListener("error", () => {
@@ -228,8 +346,7 @@ function OzPageInner({ user }: OzClientProps) {
           const message = err instanceof Error ? err.message : "Could not load Oz job.";
           setJob(null);
           setEvents([]);
-          setVisibleEvents([]);
-          setEventQueue([]);
+          setPendingFeedUpdates(0);
           setArtifacts([]);
           setSecretSummaries([]);
           setSecretInputs({});
@@ -248,18 +365,6 @@ function OzPageInner({ user }: OzClientProps) {
       source?.close();
     };
   }, [jobId, streamVersion]);
-
-  useEffect(() => {
-    if (eventQueue.length === 0) return;
-    const id = setInterval(() => {
-      setEventQueue((current) => {
-        const [next, ...rest] = current;
-        if (next) setVisibleEvents((visible) => mergeEvents(visible, [next]).slice(-80));
-        return rest;
-      });
-    }, 420);
-    return () => clearInterval(id);
-  }, [eventQueue.length]);
 
   useEffect(() => {
     if (!job || (job.status !== "awaiting_approval" && job.status !== "running")) return;
@@ -293,8 +398,14 @@ function OzPageInner({ user }: OzClientProps) {
       ? artifact.data as Array<{ surface: string; surfaces?: string[]; sourceUrl: string; signal: string; signals?: string[]; confidence: number }>
       : [];
   }, [artifacts]);
+  const displayEvents = useMemo(() => buildDisplayEvents(events), [events]);
+  const filteredDisplayEvents = useMemo(
+    () => displayEvents.filter((event) => eventMatchesFilter(event, eventFilter)),
+    [displayEvents, eventFilter],
+  );
+  const latestDisplayEvent = displayEvents.at(-1);
+  const latestDisplayKey = latestDisplayEvent ? `${latestDisplayEvent.id}:${latestDisplayEvent.count}:${events.length}` : "empty";
   const currentPhase = job ? phaseIndexForStatus(job.status) : 0;
-  const latestEvent = visibleEvents.at(-1);
   const docsCount = docsMap.length;
   const scenarioCount = draftSuite?.scenarios.length ?? 0;
   const runCount = job?.state.run?.runIds.length ?? 0;
@@ -309,6 +420,40 @@ function OzPageInner({ user }: OzClientProps) {
       && !(infraHealth && !infraHealth.ok)
       && !busy,
   );
+
+  function scrollFeedToLatest(behavior: ScrollBehavior = "smooth") {
+    const feed = feedRef.current;
+    if (!feed) return;
+    feed.scrollTo({ top: feed.scrollHeight, behavior });
+    setAutoFollowFeed(true);
+    setPendingFeedUpdates(0);
+  }
+
+  function handleFeedScroll() {
+    const feed = feedRef.current;
+    if (!feed) return;
+    const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 56;
+    setAutoFollowFeed(nearBottom);
+    if (nearBottom) setPendingFeedUpdates(0);
+  }
+
+  useEffect(() => {
+    const feed = feedRef.current;
+    if (!feed) return;
+    if (autoFollowFeed) {
+      requestAnimationFrame(() => scrollFeedToLatest("smooth"));
+      return;
+    }
+    if (filteredDisplayEvents.length > 0) {
+      setPendingFeedUpdates((count) => Math.min(count + 1, 99));
+    }
+  }, [latestDisplayKey, eventFilter]);
+
+  useEffect(() => {
+    setAutoFollowFeed(true);
+    setPendingFeedUpdates(0);
+    requestAnimationFrame(() => scrollFeedToLatest("auto"));
+  }, [eventFilter]);
 
   async function startJob() {
     if (mode === "manual") {
@@ -392,8 +537,8 @@ function OzPageInner({ user }: OzClientProps) {
   async function clearCurrentJob() {
     setJob(null);
     setEvents([]);
-    setVisibleEvents([]);
-    setEventQueue([]);
+    setPendingFeedUpdates(0);
+    setAutoFollowFeed(true);
     setArtifacts([]);
     setSecretSummaries([]);
     setSecretInputs({});
@@ -664,106 +809,174 @@ function OzPageInner({ user }: OzClientProps) {
         </section>
       )}
 
-      <section className="oz-now">
-        <div>
-          <p className="eyebrow">Current signal</p>
-          <strong>{latestEvent ? eventTitle(latestEvent) : "Waiting for activity"}</strong>
-          <span title={latestEvent?.message}>{latestEvent ? eventMessage(latestEvent) : "Oz will stream discovery, suite, and run events here."}</span>
-        </div>
-      </section>
-
-      <section className="oz-timeline">
-        <div className="oz-timeline-title">
-          <div>
-            <p className="eyebrow">Live activity</p>
-            <strong>Event stream</strong>
-          </div>
-          <span>{events.length} event{events.length === 1 ? "" : "s"} tracked</span>
-        </div>
-        {visibleEvents.length === 0 && (
-          <div className="oz-empty-events">
-            <strong>No events yet</strong>
-            <p>Oz will show discovery, approval, run, and report events as they arrive.</p>
-          </div>
-        )}
-        {visibleEvents.map((event) => (
-          <div key={event.id ?? `${event.kind}-${event.createdAt}`} className={`oz-event ${eventTone(event)}`}>
-            <span className="oz-event-dot" />
+      <div className="oz-workspace">
+        <main className="oz-primary-column">
+          <section className="oz-now">
             <div>
-              <strong>{eventTitle(event)}</strong>
-              <p title={event.message}>{eventMessage(event)}</p>
+              <p className="eyebrow">Current signal</p>
+              <strong>{latestDisplayEvent ? latestDisplayEvent.title : "Waiting for activity"}</strong>
+              <span title={latestDisplayEvent?.rawMessage}>{latestDisplayEvent ? latestDisplayEvent.message : "Oz will stream discovery, suite, and run events here."}</span>
             </div>
-          </div>
-        ))}
-        {eventQueue.length > 0 && <div className="oz-event oz-event-pending"><span className="oz-event-dot" /><p>{eventQueue.length} update{eventQueue.length === 1 ? "" : "s"} queued</p></div>}
-      </section>
+          </section>
 
-      {job?.state.productProfile && (
-        <section className="oz-panel">
-          <div className="oz-panel-header">
-            <h2>Oz understood your product</h2>
-            <Badge variant="outline">{confidence(job.state.productProfile.confidence)}</Badge>
-          </div>
-          <div className="oz-intel-grid">
-            <p><strong>Product:</strong> {job.state.productProfile.productName}</p>
-            <p><strong>Type:</strong> {job.state.productProfile.productType.join(", ")}</p>
-            <p><strong>Auth:</strong> {job.state.productProfile.auth?.scheme ?? "unknown"}</p>
-            <p><strong>SDKs:</strong> {job.state.productProfile.sdks.map((sdk) => sdk.packageName).join(", ") || "none found"}</p>
-            <p><strong>Required env:</strong> {job.state.productProfile.requiredEnv.map((env) => env.name).join(", ") || "none detected"}</p>
-          </div>
-          <p className="oz-summary">{job.state.productProfile.summary}</p>
-        </section>
-      )}
-
-      {job?.state.productProfile?.requiredEnv.length ? (
-        <section className="oz-panel">
-          <div className="oz-panel-header">
-            <h2>Product credentials</h2>
-            <Badge variant={missingSecrets.length ? "warning" : "success"}>{missingSecrets.length ? `${missingSecrets.length} missing` : "ready"}</Badge>
-          </div>
-          <div className="secret-list">
-            {job.state.productProfile.requiredEnv.map((env) => {
-              const saved = savedSecretNames.has(env.name);
-              const missing = missingSecrets.includes(env.name);
-              return (
-                <div className="secret-row" key={env.name}>
-                  <div>
-                    <strong className="mono">{env.name}</strong>
-                    <span>{env.required === false ? "optional" : "required"} · {saved ? "saved" : missing ? "missing" : "available from environment"}</span>
-                  </div>
-                  <Input
-                    className="inline-input mono"
-                    type="password"
-                    value={secretInputs[env.name] ?? ""}
-                    placeholder={saved ? "Saved value" : "Paste value"}
-                    onChange={(e) => setSecretInputs((current) => ({ ...current, [env.name]: e.target.value }))}
-                  />
-                </div>
-              );
-            })}
-          </div>
-          <div className="oz-card-actions">
-            <Button disabled={busy || Object.keys(secretInputs).length === 0} onClick={() => void saveSecrets()}>
-              {busy ? "Saving..." : "Save credentials"}
-            </Button>
-          </div>
-        </section>
-      ) : null}
-
-      {docsMap.length > 0 && (
-        <section className="oz-panel">
-          <h2>Docs map</h2>
-          <div className="oz-docs-map">
-            {docsMap.map((item) => (
-              <div key={`${item.surface}-${item.sourceUrl}`} className="oz-doc-row">
-                <strong>{item.surfaces?.join(", ") ?? item.surface}</strong>
-                <span>{item.signals?.join(", ") ?? item.signal}</span>
-                <a href={item.sourceUrl} target="_blank" rel="noreferrer">{new URL(item.sourceUrl).pathname || item.sourceUrl}</a>
+          <section className="oz-timeline">
+            <div className="oz-timeline-title">
+              <div>
+                <p className="eyebrow">Live activity</p>
+                <strong>Run console</strong>
               </div>
-            ))}
-          </div>
-        </section>
-      )}
+              <div className="oz-feed-meta">
+                <span>{events.length} raw event{events.length === 1 ? "" : "s"}</span>
+                <span>{displayEvents.length} signal{displayEvents.length === 1 ? "" : "s"}</span>
+              </div>
+            </div>
+            <div className="oz-event-filters" aria-label="Live event filters">
+              {EVENT_FILTERS.map((filter) => (
+                <button
+                  key={filter.id}
+                  className={`oz-filter-chip${eventFilter === filter.id ? " active" : ""}`}
+                  onClick={() => setEventFilter(filter.id)}
+                  type="button"
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+            <div className="oz-feed-shell">
+              <div className="oz-feed-list" ref={feedRef} onScroll={handleFeedScroll}>
+                {filteredDisplayEvents.length === 0 && (
+                  <div className="oz-empty-events">
+                    <strong>No matching events</strong>
+                    <p>Change the filter or wait for Oz to stream discovery, approval, run, and report events.</p>
+                  </div>
+                )}
+                {filteredDisplayEvents.map((event) => (
+                  <article key={event.id} className={`oz-event ${event.tone}${event.isReasoning ? " reasoning" : ""}`}>
+                    <span className="oz-event-dot" />
+                    <div>
+                      <div className="oz-event-line">
+                        <strong>{event.title}</strong>
+                        {event.timeLabel ? <time>{event.timeLabel}</time> : null}
+                        {event.count > 1 ? <span>{event.count} updates</span> : null}
+                      </div>
+                      <p title={event.rawMessage}>{event.message}</p>
+                      {event.rawEvents.length > 1 && (
+                        <details className="oz-event-details">
+                          <summary>Raw telemetry</summary>
+                          <pre>{event.rawEvents.slice(-3).map((raw) => raw.message).join("\n")}</pre>
+                        </details>
+                      )}
+                    </div>
+                  </article>
+                ))}
+              </div>
+              {!autoFollowFeed && pendingFeedUpdates > 0 && (
+                <button className="oz-new-updates" onClick={() => scrollFeedToLatest()} type="button">
+                  {pendingFeedUpdates} new update{pendingFeedUpdates === 1 ? "" : "s"}
+                </button>
+              )}
+            </div>
+          </section>
+        </main>
+
+        <aside className="oz-side-rail">
+          {job?.state.productProfile && (
+            <section className="oz-panel">
+              <div className="oz-panel-header">
+                <h2>Product profile</h2>
+                <Badge variant="outline">{confidence(job.state.productProfile.confidence)}</Badge>
+              </div>
+              <div className="oz-intel-grid compact">
+                <p><strong>Product:</strong> {job.state.productProfile.productName}</p>
+                <p><strong>Type:</strong> {job.state.productProfile.productType.join(", ")}</p>
+                <p><strong>Auth:</strong> {job.state.productProfile.auth?.scheme ?? "unknown"}</p>
+                <p><strong>SDKs:</strong> {job.state.productProfile.sdks.map((sdk) => sdk.packageName).join(", ") || "none found"}</p>
+                <p><strong>Required env:</strong> {job.state.productProfile.requiredEnv.map((env) => env.name).join(", ") || "none detected"}</p>
+              </div>
+              <p className="oz-summary">{job.state.productProfile.summary}</p>
+            </section>
+          )}
+
+          {job?.state.productProfile?.requiredEnv.length ? (
+            <section className="oz-panel">
+              <div className="oz-panel-header">
+                <h2>Credentials</h2>
+                <Badge variant={missingSecrets.length ? "warning" : "success"}>{missingSecrets.length ? `${missingSecrets.length} missing` : "ready"}</Badge>
+              </div>
+              <div className="secret-list">
+                {job.state.productProfile.requiredEnv.map((env) => {
+                  const saved = savedSecretNames.has(env.name);
+                  const missing = missingSecrets.includes(env.name);
+                  return (
+                    <div className="secret-row" key={env.name}>
+                      <div>
+                        <strong className="mono">{env.name}</strong>
+                        <span>{env.required === false ? "optional" : "required"} · {saved ? "saved" : missing ? "missing" : "available from environment"}</span>
+                      </div>
+                      <Input
+                        className="inline-input mono"
+                        type="password"
+                        value={secretInputs[env.name] ?? ""}
+                        placeholder={saved ? "Saved value" : "Paste value"}
+                        onChange={(e) => setSecretInputs((current) => ({ ...current, [env.name]: e.target.value }))}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="oz-card-actions">
+                <Button disabled={busy || Object.keys(secretInputs).length === 0} onClick={() => void saveSecrets()}>
+                  {busy ? "Saving..." : "Save credentials"}
+                </Button>
+              </div>
+            </section>
+          ) : null}
+
+          {currentRunBlockers.length > 0 && (
+            <section className="oz-panel">
+              <div className="oz-panel-header">
+                <h2>Blockers</h2>
+                <Badge variant="warning">{currentRunBlockers.length}</Badge>
+              </div>
+              <div className="oz-run-blockers">
+                {currentRunBlockers.map((blocker) => <span key={blocker}>{blocker}</span>)}
+              </div>
+            </section>
+          )}
+
+          {draftSuite && (
+            <section className="oz-panel">
+              <div className="oz-panel-header">
+                <h2>Suite summary</h2>
+                <Badge variant="secondary">{draftSuite.scenarios.length} scenarios</Badge>
+              </div>
+              <div className="oz-suite-summary-list">
+                {draftSuite.scenarios.slice(0, 4).map((scenario) => (
+                  <div key={scenario.id}>
+                    <strong>{scenario.title}</strong>
+                    <span>{scenario.assertions.length} checks · {confidence(scenario.confidence)}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {docsMap.length > 0 && (
+            <section className="oz-panel">
+              <h2>Docs map</h2>
+              <div className="oz-docs-map">
+                {docsMap.map((item) => (
+                  <div key={`${item.surface}-${item.sourceUrl}`} className="oz-doc-row">
+                    <strong>{item.surfaces?.join(", ") ?? item.surface}</strong>
+                    <span>{item.signals?.join(", ") ?? item.signal}</span>
+                    <a href={item.sourceUrl} target="_blank" rel="noreferrer">{new URL(item.sourceUrl).pathname || item.sourceUrl}</a>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </aside>
+      </div>
 
       {draftSuite && (
         <section className="oz-panel">
