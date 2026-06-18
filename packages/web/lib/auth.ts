@@ -3,8 +3,8 @@ import { cookies } from "next/headers";
 import type { User } from "@kiln/shared";
 import { getStore } from "@kiln/shared/store";
 
-const SESSION_COOKIE = "kiln_session";
-const LEGACY_SESSION_COOKIE = "id";
+export const SESSION_COOKIE = "kiln_session";
+export const LEGACY_SESSION_COOKIE = "id";
 const SESSION_TTL_SEC = 60 * 60 * 24 * 30;
 
 function requireGitHubAuth(): boolean {
@@ -15,7 +15,7 @@ function appUrl(): string {
   return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 }
 
-function cookieOptions() {
+export function sessionCookieOptions() {
   return {
     httpOnly: true,
     sameSite: "lax" as const,
@@ -29,21 +29,34 @@ function hashSessionToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export async function createUserSession(userId: string): Promise<void> {
+export function expiredSessionCookieOptions() {
+  return { ...sessionCookieOptions(), maxAge: 0 };
+}
+
+export async function createSessionToken(userId: string): Promise<string> {
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + SESSION_TTL_SEC * 1_000).toISOString();
   await getStore().createSession(hashSessionToken(token), userId, expiresAt);
+  return token;
+}
+
+export async function deleteSessionTokens(tokens: Array<string | undefined>): Promise<void> {
+  const activeTokens = tokens.filter((token): token is string => Boolean(token));
+  await Promise.all(activeTokens.map((token) => getStore().deleteSession(hashSessionToken(token))));
+}
+
+export async function createUserSession(userId: string): Promise<void> {
+  const token = await createSessionToken(userId);
   const cookieStore = await cookies();
-  cookieStore.set(SESSION_COOKIE, token, cookieOptions());
-  cookieStore.set(LEGACY_SESSION_COOKIE, "", { ...cookieOptions(), maxAge: 0 });
+  cookieStore.set(SESSION_COOKIE, token, sessionCookieOptions());
+  cookieStore.set(LEGACY_SESSION_COOKIE, "", expiredSessionCookieOptions());
 }
 
 export async function clearCurrentSession(): Promise<void> {
   const cookieStore = await cookies();
-  const tokens = [cookieStore.get(SESSION_COOKIE)?.value, cookieStore.get(LEGACY_SESSION_COOKIE)?.value].filter(Boolean);
-  await Promise.all(tokens.map((token) => getStore().deleteSession(hashSessionToken(token!))));
-  cookieStore.set(SESSION_COOKIE, "", { ...cookieOptions(), maxAge: 0 });
-  cookieStore.set(LEGACY_SESSION_COOKIE, "", { ...cookieOptions(), maxAge: 0 });
+  await deleteSessionTokens([cookieStore.get(SESSION_COOKIE)?.value, cookieStore.get(LEGACY_SESSION_COOKIE)?.value]);
+  cookieStore.set(SESSION_COOKIE, "", expiredSessionCookieOptions());
+  cookieStore.set(LEGACY_SESSION_COOKIE, "", expiredSessionCookieOptions());
 }
 
 /** Return the authenticated user, or a seeded identity only in local development. */

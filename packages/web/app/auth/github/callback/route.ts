@@ -1,8 +1,14 @@
 import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
+import { NextResponse } from "next/server";
 import { getStore } from "@kiln/shared/store";
 import type { User } from "@kiln/shared";
-import { createUserSession } from "../../../../lib/auth";
+import {
+  createSessionToken,
+  expiredSessionCookieOptions,
+  LEGACY_SESSION_COOKIE,
+  sessionCookieOptions,
+  SESSION_COOKIE,
+} from "../../../../lib/auth";
 
 export const runtime = "nodejs";
 
@@ -41,7 +47,25 @@ async function fetchGitHubUser(token: string): Promise<GitHubUser> {
   return (await res.json()) as GitHubUser;
 }
 
-export async function GET(req: Request): Promise<void> {
+function expiredOAuthCookieOptions(appUrl: string) {
+  return {
+    httpOnly: true,
+    sameSite: "lax" as const,
+    secure: appUrl.startsWith("https://"),
+    path: "/",
+    maxAge: 0,
+  };
+}
+
+function redirectWithClearedOAuthCookies(location: URL, appUrl: string): NextResponse {
+  const response = NextResponse.redirect(location);
+  const options = expiredOAuthCookieOptions(appUrl);
+  response.cookies.set("kiln_oauth_state", "", options);
+  response.cookies.set("kiln_oauth_return_to", "", options);
+  return response;
+}
+
+export async function GET(req: Request): Promise<Response> {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
@@ -51,7 +75,7 @@ export async function GET(req: Request): Promise<void> {
   const returnTo = safeReturnTo(cookieStore.get("kiln_oauth_return_to")?.value);
 
   if (!code || !state || state !== expectedState) {
-    redirect("/");
+    return redirectWithClearedOAuthCookies(new URL("/", appUrl), appUrl);
   }
 
   const token = await exchangeCode(code, appUrl);
@@ -64,21 +88,10 @@ export async function GET(req: Request): Promise<void> {
     createdAt: new Date().toISOString(),
   };
   const storedUser = await getStore().upsertUser(user);
+  const sessionToken = await createSessionToken(storedUser.id);
 
-  cookieStore.set("kiln_oauth_state", "", {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: appUrl.startsWith("https://"),
-    path: "/",
-    maxAge: 0,
-  });
-  cookieStore.set("kiln_oauth_return_to", "", {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: appUrl.startsWith("https://"),
-    path: "/",
-    maxAge: 0,
-  });
-  await createUserSession(storedUser.id);
-  redirect(returnTo);
+  const response = redirectWithClearedOAuthCookies(new URL(returnTo, appUrl), appUrl);
+  response.cookies.set(SESSION_COOKIE, sessionToken, sessionCookieOptions());
+  response.cookies.set(LEGACY_SESSION_COOKIE, "", expiredSessionCookieOptions());
+  return response;
 }
