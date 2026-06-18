@@ -77,6 +77,17 @@ describe("OzOrchestrator", () => {
     expect(ready.state.productProfile?.requiredEnv.map((env) => env.name)).toContain("MOSS_PROJECT_ID");
     expect(ready.state.suiteDraft?.scenarios.some((scenario) => scenario.id === "http_client_init")).toBe(true);
     expect(ready.state.suiteDraft?.scenarios.some((scenario) => scenario.id === "sdk_import_init")).toBe(false);
+    const firstCall = ready.state.suiteDraft?.scenarios.find((scenario) => scenario.id === "first_successful_call");
+    expect(firstCall?.task).toContain("src/index.mjs");
+    expect(firstCall?.assertions).toEqual(
+      expect.arrayContaining([
+        { type: "file", name: "Integration entrypoint exists", config: { path: "src/index.mjs" } },
+        { type: "shell", name: "Project command succeeds", config: { command: "node src/index.mjs" } },
+      ]),
+    );
+    const secretAssertions = firstCall?.assertions.filter((assertion) => assertion.name.startsWith("Secret is not printed")) ?? [];
+    expect(secretAssertions.map((assertion) => assertion.name)).toEqual(["Secret is not printed: MOSS_PROJECT_KEY"]);
+    expect(secretAssertions[0]?.config).toMatchObject({ command: expect.stringContaining("sh -c") });
   });
 
   it("keeps Oz run observations compact", () => {

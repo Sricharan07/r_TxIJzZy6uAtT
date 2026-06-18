@@ -16,11 +16,17 @@ function sdkAssertion(profile: OzProductProfile): Assertion | null {
   };
 }
 
+function isSecretLikeEnv(name: string): boolean {
+  return /(KEY|TOKEN|SECRET|PASSWORD|BEARER|AUTH|CREDENTIAL)/i.test(name);
+}
+
 function secretLeakAssertions(profile: OzProductProfile): Assertion[] {
-  return profile.requiredEnv.map((env) => ({
+  return profile.requiredEnv.filter((env) => isSecretLikeEnv(env.name)).map((env) => ({
     type: "shell" as const,
     name: `Secret is not printed: ${env.name}`,
-    config: { command: `! grep -R "$${env.name}" . --exclude-dir=node_modules --exclude=package-lock.json 2>/dev/null` },
+    config: {
+      command: `sh -c 'value=$(printenv ${env.name}); [ -z "$value" ] || ! grep -R -F --exclude-dir=node_modules --exclude=package-lock.json -- "$value" . 2>/dev/null'`,
+    },
   }));
 }
 
