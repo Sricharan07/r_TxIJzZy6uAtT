@@ -65,7 +65,6 @@ export async function GET(req: Request): Promise<void> {
   };
   const storedUser = await getStore().upsertUser(user);
 
-  await createUserSession(storedUser.id);
   cookieStore.set("kiln_oauth_state", "", {
     httpOnly: true,
     sameSite: "lax",
@@ -80,5 +79,6 @@ export async function GET(req: Request): Promise<void> {
     path: "/",
     maxAge: 0,
   });
+  await createUserSession(storedUser.id);
   redirect(returnTo);
 }
