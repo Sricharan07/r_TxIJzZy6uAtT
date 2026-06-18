@@ -180,7 +180,6 @@ function insight(input: Omit<DraftInsight, "traceEvidence" | "docsEvidence"> & {
 
 function analyzeRun(state: OzAgentState, run: RunResult): DraftInsight[] {
   const text = runText(run);
-  const lower = text.toLowerCase();
   const items: DraftInsight[] = [];
   const repeated = repeatedErrorSignals(run);
   const apiErrors = apiErrorSignals(run);
@@ -233,7 +232,7 @@ function analyzeRun(state: OzAgentState, run: RunResult): DraftInsight[] {
     }));
   }
 
-  if (leakedSecretSignal(run) || /secret.*(?:printed|logged|exposed|leaked)|printed.*secret/i.test(lower)) {
+  if (leakedSecretSignal(run)) {
     items.push(insight({
       key: "agent_secret_exposure",
       category: "agent",
