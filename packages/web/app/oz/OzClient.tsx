@@ -4,6 +4,10 @@ import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { OzArtifact, OzEvent, OzJob, OzMode, OzScenario, OzSuiteDraft, ProductSecretSummary } from "@kiln/shared";
+import { Badge } from "@/components/ui/badge";
+import { Button, buttonClassName } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 
 interface JobResponse {
   job: OzJob;
@@ -105,6 +109,31 @@ function eventTitle(event: OzEvent): string {
     .split(" ")
     .map((word) => word.slice(0, 1).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+function eventMessage(event: OzEvent): string {
+  const agentProgress = event.message.match(/^Agent progress:\s*(\{.*\})$/);
+  if (!agentProgress) return event.message;
+  try {
+    const payload = JSON.parse(agentProgress[1]) as {
+      type?: string;
+      subtype?: string;
+      estimated_tokens?: number;
+      estimated_tokens_delta?: number;
+      session_id?: string;
+    };
+    if (payload.type === "system" && payload.subtype === "thinking_tokens") {
+      const total = typeof payload.estimated_tokens === "number" ? payload.estimated_tokens.toLocaleString() : "unknown";
+      const delta = typeof payload.estimated_tokens_delta === "number" ? `+${payload.estimated_tokens_delta.toLocaleString()}` : "new";
+      return `Agent is reasoning. ${total} thinking tokens tracked (${delta} since the last update).`;
+    }
+    if (payload.type) {
+      return `Agent emitted ${payload.subtype ? `${payload.subtype.replaceAll("_", " ")} ` : ""}${payload.type} telemetry.`;
+    }
+  } catch {
+    return event.message;
+  }
+  return event.message;
 }
 
 function phaseIndexForStatus(status: OzJob["status"]): number {
@@ -459,7 +488,7 @@ function OzPageInner({ user }: OzClientProps) {
     return (
       <div className="oz-page">
         <section className="oz-loading-state">
-          <div className="oz-loading-orb" aria-hidden />
+          <div className="oz-loading-mark" aria-hidden />
           <p className="eyebrow">Oz agent</p>
           <h1>Opening the job.</h1>
           <p>Fetching the latest state, artifacts, and live event cursor.</p>
@@ -495,7 +524,7 @@ function OzPageInner({ user }: OzClientProps) {
                     {user?.login}
                   </span>
                 ) : (
-                  <Link className="btn btn-primary github-btn" href="/auth/github?returnTo=/oz">
+                  <Link className={buttonClassName({ className: "github-btn" })} href="/auth/github?returnTo=/oz">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
                       <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.62 2.29 6.69 5.47 7.78.4.08.55-.18.55-.39 0-.19-.01-.84-.01-1.52-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.03 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.37 7.37 0 0 1 8 4.02c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.13-1.87 3.82-3.65 4.03.29.26.54.75.54 1.52 0 1.09-.01 1.97-.01 2.24 0 .21.15.47.55.39A8.1 8.1 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z" />
                     </svg>
@@ -506,10 +535,10 @@ function OzPageInner({ user }: OzClientProps) {
 
               <label className="field-label" htmlFor="oz-product-url">Product URL</label>
               <div className="oz-url-row">
-                <input id="oz-product-url" className="input oz-url-input" value={productUrl} onChange={(e) => setProductUrl(e.target.value)} placeholder="https://yourproduct.com" />
-                <button className="btn btn-primary" disabled={busy || !productUrl.trim()} onClick={startJob}>
+                <Input id="oz-product-url" className="oz-url-input" value={productUrl} onChange={(e) => setProductUrl(e.target.value)} placeholder="https://yourproduct.com" />
+                <Button disabled={busy || !productUrl.trim()} onClick={startJob}>
                   {busy ? "Starting..." : "Start Oz"}
-                </button>
+                </Button>
               </div>
               <textarea className="input compact" value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="Optional focus, e.g. Node SDK, auth, webhooks, or first successful API call" />
 
@@ -523,12 +552,12 @@ function OzPageInner({ user }: OzClientProps) {
               </div>
 
               <div className="oz-launch-actions">
-                <Link href="/evals/new" className="btn btn-ghost">Open Manual Builder</Link>
+                <Link href="/evals/new" className={buttonClassName({ variant: "outline" })}>Open Manual Builder</Link>
               </div>
               {authRequired && (
                 <div className="oz-auth-error">
                   <span>GitHub sign-in is required before Oz can create a job.</span>
-                  <Link className="btn btn-primary github-btn" href="/auth/github?returnTo=/oz">Continue with GitHub</Link>
+                  <Link className={buttonClassName({ className: "github-btn" })} href="/auth/github?returnTo=/oz">Continue with GitHub</Link>
                 </div>
               )}
               {error && <p className="form-error">{error}</p>}
@@ -558,60 +587,71 @@ function OzPageInner({ user }: OzClientProps) {
         <div className="oz-header-actions">
           <span className={`oz-live-pill${live ? " active" : ""}`}><span />{live ? "Live" : "Idle"}</span>
           {job.status === "running" && (
-            <button
-              className="btn btn-ghost"
+            <Button
+              variant="outline"
               disabled={busy}
               title="Cancel queued work and stop any active sandbox VM for this run."
               onClick={stopJob}
             >
               {busy ? "Stopping..." : "Stop run"}
-            </button>
+            </Button>
           )}
           {job.status === "running" && (
-            <button
-              className="btn btn-danger"
+            <Button
+              variant="destructive"
               disabled={busy}
               title="Stop active sandbox VMs, cancel queued work, and delete this job's run records."
               onClick={() => void deleteJob("TERMINATE")}
             >
               Terminate & clean up
-            </button>
+            </Button>
           )}
           {job.status !== "running" && (
-            <button
-              className="btn btn-ghost danger-text"
+            <Button
+              variant="ghost"
+              className="danger-text"
               disabled={busy}
               title="Delete this saved job record and its run data."
               onClick={() => void deleteJob("DELETE")}
             >
               Delete record
-            </button>
+            </Button>
           )}
-          <Link className="btn btn-ghost" href="/oz">New Oz Job</Link>
+          <Link className={buttonClassName({ variant: "outline" })} href="/oz">New Oz Job</Link>
         </div>
       </div>
 
       <section className="oz-status-board">
-        <div>
+        <Card className="oz-stat-card">
+          <CardContent>
           <span>Phase</span>
           <strong>{phaseLabel(job.status)}</strong>
-        </div>
-        <div>
+          </CardContent>
+        </Card>
+        <Card className="oz-stat-card">
+          <CardContent>
           <span>Docs</span>
           <strong>{docsCount}</strong>
-        </div>
-        <div>
+          </CardContent>
+        </Card>
+        <Card className="oz-stat-card">
+          <CardContent>
           <span>Scenarios</span>
           <strong>{scenarioCount}</strong>
-        </div>
-        <div>
+          </CardContent>
+        </Card>
+        <Card className="oz-stat-card">
+          <CardContent>
           <span>Runs</span>
           <strong>{runCount}</strong>
-        </div>
-        <div>
+          </CardContent>
+        </Card>
+        <Card className="oz-stat-card">
+          <CardContent>
           <span>Secrets</span>
           <strong>{requiredSecrets}</strong>
-        </div>
+          </CardContent>
+        </Card>
       </section>
 
       {job && (
@@ -628,7 +668,7 @@ function OzPageInner({ user }: OzClientProps) {
         <div>
           <p className="eyebrow">Current signal</p>
           <strong>{latestEvent ? eventTitle(latestEvent) : "Waiting for activity"}</strong>
-          <span>{latestEvent?.message ?? "Oz will stream discovery, suite, and run events here."}</span>
+          <span title={latestEvent?.message}>{latestEvent ? eventMessage(latestEvent) : "Oz will stream discovery, suite, and run events here."}</span>
         </div>
       </section>
 
@@ -651,7 +691,7 @@ function OzPageInner({ user }: OzClientProps) {
             <span className="oz-event-dot" />
             <div>
               <strong>{eventTitle(event)}</strong>
-              <p>{event.message}</p>
+              <p title={event.message}>{eventMessage(event)}</p>
             </div>
           </div>
         ))}
@@ -662,7 +702,7 @@ function OzPageInner({ user }: OzClientProps) {
         <section className="oz-panel">
           <div className="oz-panel-header">
             <h2>Oz understood your product</h2>
-            <span className="badge">{confidence(job.state.productProfile.confidence)}</span>
+            <Badge variant="outline">{confidence(job.state.productProfile.confidence)}</Badge>
           </div>
           <div className="oz-intel-grid">
             <p><strong>Product:</strong> {job.state.productProfile.productName}</p>
@@ -679,7 +719,7 @@ function OzPageInner({ user }: OzClientProps) {
         <section className="oz-panel">
           <div className="oz-panel-header">
             <h2>Product credentials</h2>
-            <span className="badge">{missingSecrets.length ? `${missingSecrets.length} missing` : "ready"}</span>
+            <Badge variant={missingSecrets.length ? "warning" : "success"}>{missingSecrets.length ? `${missingSecrets.length} missing` : "ready"}</Badge>
           </div>
           <div className="secret-list">
             {job.state.productProfile.requiredEnv.map((env) => {
@@ -691,7 +731,7 @@ function OzPageInner({ user }: OzClientProps) {
                     <strong className="mono">{env.name}</strong>
                     <span>{env.required === false ? "optional" : "required"} · {saved ? "saved" : missing ? "missing" : "available from environment"}</span>
                   </div>
-                  <input
+                  <Input
                     className="inline-input mono"
                     type="password"
                     value={secretInputs[env.name] ?? ""}
@@ -703,9 +743,9 @@ function OzPageInner({ user }: OzClientProps) {
             })}
           </div>
           <div className="oz-card-actions">
-            <button className="btn btn-primary" disabled={busy || Object.keys(secretInputs).length === 0} onClick={() => void saveSecrets()}>
+            <Button disabled={busy || Object.keys(secretInputs).length === 0} onClick={() => void saveSecrets()}>
               {busy ? "Saving..." : "Save credentials"}
-            </button>
+            </Button>
           </div>
         </section>
       ) : null}
@@ -729,7 +769,7 @@ function OzPageInner({ user }: OzClientProps) {
         <section className="oz-panel">
           <div className="oz-panel-header">
             <h2>Editable test suite</h2>
-            <span className="badge">{draftSuite.scenarios.length} scenarios</span>
+            <Badge variant="secondary">{draftSuite.scenarios.length} scenarios</Badge>
           </div>
           <div className="oz-scenarios">
             {draftSuite.scenarios.map((scenario) => (
@@ -740,8 +780,8 @@ function OzPageInner({ user }: OzClientProps) {
                     <textarea className="input" value={scenario.task} onChange={(e) => updateScenario(scenario.id, { task: e.target.value })} />
                     <textarea className="input compact" value={scenario.rationale} onChange={(e) => updateScenario(scenario.id, { rationale: e.target.value })} />
                     <div className="oz-card-actions">
-                      <button className="btn btn-primary" onClick={saveSuite}>Save</button>
-                      <button className="btn btn-ghost" onClick={() => setEditing(null)}>Cancel</button>
+                      <Button onClick={saveSuite}>Save</Button>
+                      <Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button>
                     </div>
                   </>
                 ) : (
@@ -783,9 +823,9 @@ function OzPageInner({ user }: OzClientProps) {
                       : "Estimated risk: low"}
                 </p>
               </div>
-              <button className="btn btn-primary" disabled={!canRunSuite} onClick={() => post("/run", { agentType: "claude-code", requestedRuns: 1 })}>
+              <Button disabled={!canRunSuite} onClick={() => post("/run", { agentType: "claude-code", requestedRuns: 1 })}>
                 {busy ? "Working..." : "Run test suite"}
-              </button>
+              </Button>
             </div>
           )}
         </section>
@@ -795,7 +835,7 @@ function OzPageInner({ user }: OzClientProps) {
         <section className="oz-panel">
           <div className="oz-panel-header">
             <h2>{job.status === "stopped" ? "Stopped run" : job.status === "complete" ? "Run reports" : "Live run"}</h2>
-            <span className="badge">{job.state.run.runIds.length} run{job.state.run.runIds.length === 1 ? "" : "s"}</span>
+            <Badge variant="secondary">{job.state.run.runIds.length} run{job.state.run.runIds.length === 1 ? "" : "s"}</Badge>
           </div>
           <p>
             {job.status === "stopped"
@@ -811,7 +851,7 @@ function OzPageInner({ user }: OzClientProps) {
           )}
           <div className="oz-run-links">
             {job.state.run.runIds.map((runId) => (
-              <Link key={runId} className="tmpl-btn" href={`/reports/${runId}`}>Report {runId.slice(0, 8)}</Link>
+              <Link key={runId} className={buttonClassName({ variant: "outline", size: "sm" })} href={`/reports/${runId}`}>Report {runId.slice(0, 8)}</Link>
             ))}
           </div>
         </section>
@@ -821,7 +861,7 @@ function OzPageInner({ user }: OzClientProps) {
         <section className="oz-panel">
           <div className="oz-panel-header">
             <h2>Final DX report</h2>
-            <span className="badge">{(job.state.report.frictionInsights ?? []).length} insight{(job.state.report.frictionInsights ?? []).length === 1 ? "" : "s"}</span>
+            <Badge variant="secondary">{(job.state.report.frictionInsights ?? []).length} insight{(job.state.report.frictionInsights ?? []).length === 1 ? "" : "s"}</Badge>
           </div>
           <p className="oz-summary">{job.state.report.summary}</p>
           <div className="oz-behavior-grid">

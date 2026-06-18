@@ -14,7 +14,7 @@ export async function Nav() {
     <nav className="nav">
       <Link href="/" className="nav-brand">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <rect width="24" height="24" rx="6" fill="#2563eb" />
+          <rect width="24" height="24" rx="6" fill="#667044" />
           <path
             d="M7 12l3 3 7-7"
             stroke="white"
