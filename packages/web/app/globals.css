@@ -3123,7 +3123,19 @@ input.input:focus,
 
   .oz-status-board,
   .oz-phase-strip {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .oz-status-board .ui-card {
+    min-height: 78px;
+  }
+
+  .oz-status-board .ui-card:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .oz-phase {
+    min-height: 38px;
   }
 
   .ui-button,
