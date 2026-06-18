@@ -61,18 +61,23 @@ describe("web auth sessions", () => {
     expect(userId).toBe("user-1");
     expect(new Date(expiresAt).getTime()).toBeGreaterThan(Date.now());
 
-    const token = state.cookieValues.get("id");
+    const token = state.cookieValues.get("kiln_session");
     expect(token).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(tokenHash).toBe(hash(token!));
     expect(state.cookieSet).toHaveBeenCalledWith(
-      "id",
+      "kiln_session",
       token,
       expect.objectContaining({ httpOnly: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 30 }),
+    );
+    expect(state.cookieSet).toHaveBeenCalledWith(
+      "id",
+      "",
+      expect.objectContaining({ maxAge: 0, httpOnly: true, path: "/" }),
     );
   });
 
   it("resolves the current user through the server-side session store", async () => {
-    state.cookieValues.set("id", "session-token");
+    state.cookieValues.set("kiln_session", "session-token");
     state.store.getSessionUserId.mockResolvedValue("user-1");
     state.store.getUser.mockResolvedValue({
       id: "user-1",
@@ -88,12 +93,20 @@ describe("web auth sessions", () => {
   });
 
   it("deletes the persisted session when clearing the browser cookie", async () => {
-    state.cookieValues.set("id", "session-token");
+    state.cookieValues.set("kiln_session", "session-token");
+    state.cookieValues.set("id", "legacy-session-token");
 
     await clearCurrentSession();
 
     expect(state.store.deleteSession).toHaveBeenCalledWith(hash("session-token"));
+    expect(state.store.deleteSession).toHaveBeenCalledWith(hash("legacy-session-token"));
+    expect(state.cookieValues.has("kiln_session")).toBe(false);
     expect(state.cookieValues.has("id")).toBe(false);
+    expect(state.cookieSet).toHaveBeenCalledWith(
+      "kiln_session",
+      "",
+      expect.objectContaining({ maxAge: 0, httpOnly: true, path: "/" }),
+    );
     expect(state.cookieSet).toHaveBeenCalledWith(
       "id",
       "",

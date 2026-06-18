@@ -3,7 +3,8 @@ import { cookies } from "next/headers";
 import type { User } from "@kiln/shared";
 import { getStore } from "@kiln/shared/store";
 
-const SESSION_COOKIE = "id";
+const SESSION_COOKIE = "kiln_session";
+const LEGACY_SESSION_COOKIE = "id";
 const SESSION_TTL_SEC = 60 * 60 * 24 * 30;
 
 function requireGitHubAuth(): boolean {
@@ -32,14 +33,17 @@ export async function createUserSession(userId: string): Promise<void> {
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + SESSION_TTL_SEC * 1_000).toISOString();
   await getStore().createSession(hashSessionToken(token), userId, expiresAt);
-  (await cookies()).set(SESSION_COOKIE, token, cookieOptions());
+  const cookieStore = await cookies();
+  cookieStore.set(SESSION_COOKIE, token, cookieOptions());
+  cookieStore.set(LEGACY_SESSION_COOKIE, "", { ...cookieOptions(), maxAge: 0 });
 }
 
 export async function clearCurrentSession(): Promise<void> {
   const cookieStore = await cookies();
-  const token = cookieStore.get(SESSION_COOKIE)?.value;
-  if (token) await getStore().deleteSession(hashSessionToken(token));
+  const tokens = [cookieStore.get(SESSION_COOKIE)?.value, cookieStore.get(LEGACY_SESSION_COOKIE)?.value].filter(Boolean);
+  await Promise.all(tokens.map((token) => getStore().deleteSession(hashSessionToken(token!))));
   cookieStore.set(SESSION_COOKIE, "", { ...cookieOptions(), maxAge: 0 });
+  cookieStore.set(LEGACY_SESSION_COOKIE, "", { ...cookieOptions(), maxAge: 0 });
 }
 
 /** Return the authenticated user, or a seeded identity only in local development. */
