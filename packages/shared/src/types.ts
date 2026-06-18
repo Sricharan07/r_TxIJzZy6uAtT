@@ -631,9 +631,39 @@ export interface OzRecommendedFix {
   evidence: OzEvidence[];
 }
 
+export type OzFrictionCategory = "docs" | "auth" | "sdk" | "api" | "environment" | "agent" | "harness";
+export type OzFrictionStatus = "confirmed" | "suspected" | "informational";
+
+export interface OzFrictionInsight {
+  id: string;
+  category: OzFrictionCategory;
+  title: string;
+  severity: Severity;
+  status: OzFrictionStatus;
+  affectedRunIds: string[];
+  confidence: number;
+  behavior: string;
+  recommendation: string;
+  traceEvidence: OzEvidence[];
+  docsEvidence: OzEvidence[];
+}
+
+export interface OzBehaviorSummary {
+  totalRuns: number;
+  passedRuns: number;
+  failedRuns: number;
+  retrySignals: number;
+  apiErrorSignals: number;
+  unsupportedSignals: number;
+  secretExposureSignals: number;
+  platformSignals: number;
+}
+
 export interface OzReport {
   summary: string;
   findings: Finding[];
+  behaviorSummary: OzBehaviorSummary;
+  frictionInsights: OzFrictionInsight[];
   recommendedFixes: OzRecommendedFix[];
 }
 

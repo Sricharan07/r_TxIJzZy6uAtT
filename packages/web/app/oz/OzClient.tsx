@@ -75,6 +75,10 @@ function phaseLabel(status: OzJob["status"]): string {
   return status.replaceAll("_", " ");
 }
 
+function insightLabel(value: string): string {
+  return value.replaceAll("_", " ");
+}
+
 function mergeEvents(current: OzEvent[], incoming: OzEvent[]): OzEvent[] {
   const seen = new Set(current.map((event) => event.id ?? `${event.kind}:${event.createdAt}:${event.message}`));
   const next = [...current];
@@ -788,14 +792,57 @@ function OzPageInner({ user }: OzClientProps) {
 
       {job?.state.report && (
         <section className="oz-panel">
-          <h2>Final DX report</h2>
+          <div className="oz-panel-header">
+            <h2>Final DX report</h2>
+            <span className="badge">{(job.state.report.frictionInsights ?? []).length} insight{(job.state.report.frictionInsights ?? []).length === 1 ? "" : "s"}</span>
+          </div>
           <p className="oz-summary">{job.state.report.summary}</p>
-          {job.state.report.recommendedFixes.map((fix, index) => (
-            <div className="finding-row" key={`${fix.title}-${index}`}>
-              <strong>{fix.title}</strong>
-              <p>{fix.detail}</p>
+          <div className="oz-behavior-grid">
+            <div><strong>{job.state.report.behaviorSummary?.passedRuns ?? 0}/{job.state.report.behaviorSummary?.totalRuns ?? 0}</strong><span>passed</span></div>
+            <div><strong>{job.state.report.behaviorSummary?.retrySignals ?? 0}</strong><span>retry signals</span></div>
+            <div><strong>{job.state.report.behaviorSummary?.apiErrorSignals ?? 0}</strong><span>API errors</span></div>
+            <div><strong>{job.state.report.behaviorSummary?.platformSignals ?? 0}</strong><span>platform signals</span></div>
+          </div>
+          {(job.state.report.frictionInsights ?? []).length > 0 && (
+            <div className="oz-friction-list">
+              {(job.state.report.frictionInsights ?? []).map((insight) => (
+                <article className={`oz-friction-card ${insight.status}`} key={insight.id}>
+                  <div className="oz-friction-title">
+                    <div>
+                      <span>{insightLabel(insight.category)}</span>
+                      <strong>{insight.title}</strong>
+                    </div>
+                    <span className={`badge ${insight.severity}`}>{insightLabel(insight.status)} · {confidence(insight.confidence)}</span>
+                  </div>
+                  <p>{insight.behavior}</p>
+                  <p><strong>Fix:</strong> {insight.recommendation}</p>
+                  <div className="oz-evidence-grid">
+                    <div>
+                      <strong>Trace evidence</strong>
+                      {insight.traceEvidence.slice(0, 2).map((item) => (
+                        <p key={`${insight.id}-trace-${item.source}`}>{item.quote}</p>
+                      ))}
+                    </div>
+                    <div>
+                      <strong>Docs evidence</strong>
+                      {insight.docsEvidence.slice(0, 2).map((item) => (
+                        <p key={`${insight.id}-docs-${item.source}`}>{item.source}: {item.quote}</p>
+                      ))}
+                    </div>
+                  </div>
+                </article>
+              ))}
             </div>
-          ))}
+          )}
+          <div className="oz-fix-list">
+            <h3>Recommended fixes</h3>
+            {job.state.report.recommendedFixes.map((fix, index) => (
+              <div className="finding-row" key={`${fix.title}-${index}`}>
+                <strong>{fix.title}</strong>
+                <p>{fix.detail}</p>
+              </div>
+            ))}
+          </div>
         </section>
       )}
 

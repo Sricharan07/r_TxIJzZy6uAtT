@@ -1,8 +1,20 @@
-import type { OzAgentState, OzRecommendedFix, OzReport, RunResult } from "@kiln/shared";
+import type { OzAgentState, OzFrictionInsight, OzRecommendedFix, OzReport, RunResult } from "@kiln/shared";
 import { analyzeRunFailure } from "./failure-analyst-agent.js";
+import { analyzeFriction, behaviorSummaryFor } from "./friction-analyst-agent.js";
 
-function recommendedFixes(state: OzAgentState, findings: ReturnType<typeof analyzeRunFailure>): OzRecommendedFix[] {
-  if (findings.length === 0) {
+function frictionTarget(category: OzFrictionInsight["category"]): OzRecommendedFix["target"] {
+  if (category === "auth") return "docs";
+  if (category === "harness") return "tests";
+  return category;
+}
+
+function recommendedFixes(
+  state: OzAgentState,
+  findings: ReturnType<typeof analyzeRunFailure>,
+  frictionInsights: OzFrictionInsight[],
+): OzRecommendedFix[] {
+  const actionableFriction = frictionInsights.filter((insight) => insight.status !== "informational");
+  if (findings.length === 0 && actionableFriction.length === 0) {
     return [{
       title: "Keep this suite as a regression check",
       detail: "The agent completed the generated suite. Re-run it when docs or SDK versions change.",
@@ -10,7 +22,7 @@ function recommendedFixes(state: OzAgentState, findings: ReturnType<typeof analy
       evidence: state.productProfile?.evidence ?? [],
     }];
   }
-  return findings.map((finding) => ({
+  const findingFixes: OzRecommendedFix[] = findings.map((finding): OzRecommendedFix => ({
     title: `Address ${finding.code.replaceAll("_", " ")}`,
     detail:
       finding.code === "platform_timeout"
@@ -45,6 +57,15 @@ function recommendedFixes(state: OzAgentState, findings: ReturnType<typeof analy
         : "docs",
     evidence: state.productProfile?.evidence ?? [],
   }));
+  const frictionFixes: OzRecommendedFix[] = actionableFriction.map((insight): OzRecommendedFix => ({
+    title: insight.title,
+    detail: insight.recommendation,
+    target: frictionTarget(insight.category),
+    evidence: insight.docsEvidence,
+  }));
+  return [...findingFixes, ...frictionFixes]
+    .filter((fix, index, all) => all.findIndex((item) => item.title === fix.title && item.target === fix.target) === index)
+    .slice(0, 8);
 }
 
 export function buildOzReport(state: OzAgentState, runs: RunResult[]): OzReport {
@@ -52,6 +73,8 @@ export function buildOzReport(state: OzAgentState, runs: RunResult[]): OzReport 
   const reportableRuns = runs.filter((run) => run.status !== "canceled");
   const rawFindings = reportableRuns.flatMap((run) => analyzeRunFailure(run, evidence));
   const findings = [...new Map(rawFindings.map((finding) => [finding.code, finding])).values()];
+  const behaviorSummary = behaviorSummaryFor(reportableRuns);
+  const frictionInsights = analyzeFriction(state, reportableRuns);
   const passed = reportableRuns.filter((run) =>
     run.status === "completed"
     && (run.gradeReport ? run.gradeReport.taskPassed : run.verdicts.every((verdict) => verdict.type === "llm" || verdict.passed))
@@ -70,6 +93,8 @@ export function buildOzReport(state: OzAgentState, runs: RunResult[]): OzReport 
   return {
     summary,
     findings,
-    recommendedFixes: recommendedFixes(state, findings),
+    behaviorSummary,
+    frictionInsights,
+    recommendedFixes: recommendedFixes(state, findings, frictionInsights),
   };
 }

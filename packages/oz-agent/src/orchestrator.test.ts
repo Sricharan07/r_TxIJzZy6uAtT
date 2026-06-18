@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RunResult } from "@kiln/shared";
+import type { OzAgentState, RunResult } from "@kiln/shared";
 import { JsonKilnStore } from "@kiln/shared/store";
 import { OzOrchestrator } from "./orchestrator";
 import { buildOzReport, observeRunEvent } from "./index";
@@ -8,6 +8,76 @@ import { scenarioToEvalConfig } from "./eval-config";
 
 function response(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html" } });
+}
+
+function reportState(): OzAgentState {
+  return {
+    jobId: "job-1",
+    userId: "user-1",
+    input: { productUrl: "https://example.test", mode: "copilot" },
+    discovery: {
+      docsCandidates: [],
+      selectedDocs: [{
+        url: "https://example.test/docs/quickstart",
+        title: "Quickstart",
+        text: "Install @acme/sdk, use Authorization Bearer, and call POST /v1/widgets with name.",
+        links: [],
+        fetchedAt: "2026-01-01T00:00:00.000Z",
+      }],
+      githubRepos: [],
+      packages: [],
+      codeExamples: [],
+    },
+    productProfile: {
+      companyName: "Acme",
+      productName: "Acme",
+      productType: ["api", "sdk", "auth"],
+      summary: "Acme API and SDK.",
+      auth: {
+        scheme: "bearer",
+        headerName: "Authorization",
+        envVars: ["ACME_API_KEY"],
+        evidence: [{ source: "https://example.test/docs/auth", quote: "Use Authorization: Bearer.", confidence: 0.86 }],
+      },
+      sdks: [{
+        language: "node",
+        packageName: "@acme/sdk",
+        manager: "npm",
+        evidence: [{ source: "https://example.test/docs/sdk", quote: "npm install @acme/sdk", confidence: 0.88 }],
+      }],
+      APIs: [{
+        name: "POST /v1/widgets",
+        method: "POST",
+        path: "/v1/widgets",
+        description: "Create widget.",
+        evidence: [{ source: "https://example.test/docs/api", quote: "POST /v1/widgets", confidence: 0.84 }],
+      }],
+      webhooks: [],
+      requiredEnv: [{ name: "ACME_API_KEY", scopes: ["agent", "assertion"], required: true }],
+      confidence: 0.9,
+      evidence: [{ source: "https://example.test/docs", quote: "Product docs were classified.", confidence: 0.8 }],
+    },
+  };
+}
+
+function reportRun(patch: Partial<RunResult>): RunResult {
+  return {
+    id: "run-1",
+    evalId: "eval-1",
+    evalTitle: "Eval",
+    task: "Build integration",
+    agentType: "claude-code",
+    status: "completed",
+    errorType: null,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    finishedAt: "2026-01-01T00:00:30.000Z",
+    durationSec: 30,
+    totalSteps: 4,
+    tokens: 900,
+    events: [],
+    verdicts: [],
+    ...patch,
+  };
 }
 
 const fetchImpl: typeof fetch = async (input) => {
@@ -403,5 +473,104 @@ describe("OzOrchestrator", () => {
 
     expect(report.findings[0]?.code).toBe("agent_secret_exposure");
     expect(report.recommendedFixes[0]?.target).toBe("agent");
+    expect(report.frictionInsights[0]).toMatchObject({
+      category: "agent",
+      status: "confirmed",
+      title: "Agent exposed credential values while debugging",
+    });
+  });
+
+  it("reports no meaningful friction when an API run succeeds cleanly", () => {
+    const report = buildOzReport(reportState(), [reportRun({
+      events: [{ t: 10, kind: "api", text: 'HTTP 200 {"ok":true}' }],
+      verdicts: [
+        { assertionIndex: 0, type: "file", name: "Integration entrypoint exists", passed: true },
+        { assertionIndex: 1, type: "shell", name: "Project command succeeds", passed: true, output: "HTTP 200" },
+        { assertionIndex: 2, type: "shell", name: "Result contract reports success", passed: true, output: '{"ok":true}' },
+      ],
+    })]);
+
+    expect(report.behaviorSummary).toMatchObject({ totalRuns: 1, passedRuns: 1, failedRuns: 0 });
+    expect(report.frictionInsights[0]).toMatchObject({
+      category: "docs",
+      status: "informational",
+      title: "No meaningful doc friction detected in this run",
+    });
+  });
+
+  it("classifies native SDK setup failures as environment friction with SDK evidence", () => {
+    const report = buildOzReport(reportState(), [reportRun({
+      id: "run-native",
+      status: "errored",
+      errorType: "platform",
+      events: [
+        { t: 0, kind: "command", text: "Product setup: Install @acme/sdk" },
+        { t: 0, kind: "fail", text: "Run failed before completion", annotation: "Cannot find native binding. /lib/x86_64-linux-gnu/libc.so.6: version GLIBC_2.38 not found." },
+      ],
+      verdicts: [],
+    })]);
+
+    expect(report.findings[0]?.code).toBe("environment_issue");
+    expect(report.frictionInsights[0]).toMatchObject({
+      category: "environment",
+      title: "SDK setup depends on undocumented or unavailable native runtime support",
+      status: "confirmed",
+    });
+    expect(report.frictionInsights[0]?.docsEvidence[0]?.source).toBe("https://example.test/docs/sdk");
+  });
+
+  it("classifies authentication rejection as auth doc friction", () => {
+    const report = buildOzReport(reportState(), [reportRun({
+      events: [{ t: 4, kind: "api", text: "HTTP 401 Unauthorized" }],
+      verdicts: [
+        { assertionIndex: 0, type: "shell", name: "Project command succeeds", passed: false, output: "401 Unauthorized" },
+      ],
+    })]);
+
+    expect(report.findings[0]?.code).toBe("auth_confusion");
+    expect(report.frictionInsights[0]).toMatchObject({
+      category: "auth",
+      title: "Agent could not apply the documented auth model",
+    });
+    expect(report.recommendedFixes.some((fix) => fix.target === "docs")).toBe(true);
+  });
+
+  it("surfaces request-shape trial and error even when the final call passes", () => {
+    const report = buildOzReport(reportState(), [reportRun({
+      events: [
+        { t: 4, kind: "api", text: "HTTP 422 missing required field name" },
+        { t: 8, kind: "api", text: "HTTP 400 bad request" },
+        { t: 12, kind: "api", text: 'HTTP 200 {"ok":true}' },
+      ],
+      verdicts: [
+        { assertionIndex: 0, type: "file", name: "Integration entrypoint exists", passed: true },
+        { assertionIndex: 1, type: "shell", name: "Project command succeeds", passed: true, output: "HTTP 200" },
+        { assertionIndex: 2, type: "shell", name: "Result contract reports success", passed: true, output: '{"ok":true}' },
+      ],
+    })]);
+
+    expect(report.findings).toEqual([]);
+    expect(report.frictionInsights.some((insight) =>
+      insight.category === "api" && insight.title === "Agent succeeded only after API trial and error"
+    )).toBe(true);
+    expect(report.recommendedFixes.some((fix) => fix.title === "Agent succeeded only after API trial and error")).toBe(true);
+  });
+
+  it("promotes repeated suspected friction across runs to confirmed", () => {
+    const makeLoopRun = (id: string) => reportRun({
+      id,
+      events: [
+        { t: 1, kind: "warn", text: "TypeError: undefined method" },
+        { t: 2, kind: "warn", text: "TypeError: undefined method" },
+        { t: 3, kind: "warn", text: "TypeError: undefined method" },
+      ],
+      verdicts: [{ assertionIndex: 0, type: "shell", name: "Project command succeeds", passed: false }],
+    });
+    const report = buildOzReport(reportState(), [makeLoopRun("run-a"), makeLoopRun("run-b")]);
+
+    expect(report.frictionInsights.find((insight) => insight.id === "friction:agent_looped_on_same_error")).toMatchObject({
+      status: "confirmed",
+      affectedRunIds: ["run-a", "run-b"],
+    });
   });
 });
