@@ -627,7 +627,7 @@ export interface OzVerification {
 export interface OzRecommendedFix {
   title: string;
   detail: string;
-  target: "docs" | "sdk" | "api" | "tests" | "environment";
+  target: "docs" | "sdk" | "api" | "tests" | "environment" | "agent";
   evidence: OzEvidence[];
 }
 

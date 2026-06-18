@@ -23,6 +23,7 @@ function nodeEntrypointTask(task: string): string {
     "Create `src/index.mjs` as the runnable Node entrypoint for this scenario.",
     "The entrypoint must run with `node src/index.mjs` from the project root.",
     "Write `src/oz-result.json` as a JSON object with `ok: true` only after a real successful product call or documented local validation; include `operation` plus `usedEndpoint` or `usedSdkPackage`, and include `httpStatus` when an HTTP response was observed.",
+    "Never print, echo, log, serialize, or write secret environment variable values; validate credential presence by checking whether variables are set, and mention only variable names in errors or summaries.",
     task,
   ].join(" ");
 }

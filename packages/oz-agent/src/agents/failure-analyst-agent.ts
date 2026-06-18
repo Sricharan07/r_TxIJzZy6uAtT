@@ -14,7 +14,8 @@ type FailureCode =
   | "test_suite_issue"
   | "environment_issue"
   | "product_api_error"
-  | "harness_issue";
+  | "harness_issue"
+  | "agent_secret_exposure";
 
 function runText(run: RunResult): string {
   return [
@@ -50,6 +51,7 @@ function classify(run: RunResult): FailureCode {
   if (/missing required product environment variables/.test(text)) return "missing_required_env";
   if (run.errorType === "platform" && /sandbox|firecracker|guest|ssh|manager unavailable|teardown/.test(text)) return "sandbox_failure";
   if (runtimeSucceeded(run, text) && failedOnlyAdvisoryOrPatternChecks(run)) return "harness_issue";
+  if (/secret is not printed|secret.*(printed|logged|exposed|leaked)|printed.*secret/.test(text)) return "agent_secret_exposure";
   if (/cannot find module|package|install|glibc|native binding|product (setup|preflight) step/.test(text)) return "environment_issue";
   if (/not a function|does not export|undefined method|sdk/.test(text)) return "sdk_mismatch";
   if (/cli exited with code|agent cli|claude code cli|codex cli|cursor cli/.test(text)) return "agent_cli_failure";
