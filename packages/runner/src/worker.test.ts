@@ -152,6 +152,64 @@ describe("executeRun", () => {
     }
   });
 
+  it("redacts product environment values from streamed and stored run events", async () => {
+    const previous = process.env.KILN_PRODUCT_TOKEN;
+    process.env.KILN_PRODUCT_TOKEN = "runner-secret-token";
+    const leakingAgent: Agent = {
+      type: "claude-code",
+      async startTask(task) {
+        await task.onEvent?.({
+          t: 1,
+          kind: "info",
+          text: "Calling product API with runner-secret-token",
+          annotation: "debug header runner-secret-token",
+        });
+        if ("writeFile" in task.sandbox && typeof task.sandbox.writeFile === "function") {
+          await task.sandbox.writeFile("src/checkout.ts", "export const checkout = true;\n");
+          await task.sandbox.writeFile("README.md", "This project contains a checkout scaffold.\n");
+        }
+        return {
+          events: [],
+          tokens: 100,
+          steps: 1,
+          async collectArtifacts() {},
+        };
+      },
+    };
+    const streamed: string[] = [];
+    try {
+      const result = await executeRun(
+        {
+          ...config,
+          productProfile: {
+            companyName: "TestCo",
+            productName: "Secret API",
+            productType: "api",
+            runtime: { language: "node", image: "default" },
+            docsSources: [],
+            requiredEnv: [{ name: "KILN_PRODUCT_TOKEN", scopes: ["agent", "assertion"], required: true }],
+          },
+        },
+        {
+          sandbox: new LocalSandbox("redacted-product-env-test"),
+          agent: leakingAgent,
+          async onEvent(event) {
+            streamed.push(`${event.text} ${event.annotation ?? ""}`);
+          },
+        },
+      );
+
+      const stored = result.events.map((event) => `${event.text} ${event.annotation ?? ""}`).join("\n");
+      expect(streamed.join("\n")).not.toContain("runner-secret-token");
+      expect(stored).not.toContain("runner-secret-token");
+      expect(streamed.join("\n")).toContain("[redacted:KILN_PRODUCT_TOKEN]");
+      expect(stored).toContain("[redacted:KILN_PRODUCT_TOKEN]");
+    } finally {
+      if (previous === undefined) delete process.env.KILN_PRODUCT_TOKEN;
+      else process.env.KILN_PRODUCT_TOKEN = previous;
+    }
+  });
+
   it("fails fast when a required product environment variable is missing", async () => {
     const result = await executeRun(
       {

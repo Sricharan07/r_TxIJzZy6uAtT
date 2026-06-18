@@ -276,13 +276,22 @@ function packagePreflightSteps(config: EvalConfig): ProductCommandStep[] {
     }));
 }
 
+function redactRunEvent(config: EvalConfig, event: AgentEvent): AgentEvent {
+  const text = redactProductEnvValues(config, event.text);
+  const annotation = event.annotation === undefined ? undefined : redactProductEnvValues(config, event.annotation);
+  if (text === event.text && annotation === event.annotation) return event;
+  return { ...event, text, ...(annotation === undefined ? {} : { annotation }) };
+}
+
 async function emitRunEvent(
+  config: EvalConfig,
   events: AgentEvent[],
   onEvent: ExecuteRunOptions["onEvent"] | undefined,
   event: AgentEvent,
 ): Promise<void> {
-  events.push(event);
-  await onEvent?.(event);
+  const redacted = redactRunEvent(config, event);
+  events.push(redacted);
+  await onEvent?.(redacted);
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutSec: number): Promise<T> {
@@ -379,7 +388,7 @@ async function runProductSteps({
 }): Promise<void> {
   const scope = stepScope(phase);
   for (const step of steps) {
-    await emitRunEvent(events, onEvent, {
+    await emitRunEvent(config, events, onEvent, {
       t: 0,
       kind: "command",
       text: `Product ${phase}: ${step.name}`,
@@ -465,8 +474,7 @@ export async function executeRun(
         prompt,
         async onEvent(event) {
           agentStreamedEventCount += 1;
-          events.push(event);
-          await options.onEvent?.(event);
+          await emitRunEvent(config, events, options.onEvent, event);
         },
       }),
       config.metadata.timeoutSec,
@@ -475,7 +483,7 @@ export async function executeRun(
 
     if (agentStreamedEventCount === 0) {
       for (const event of run.events) {
-        await emitRunEvent(events, options.onEvent, event);
+        await emitRunEvent(config, events, options.onEvent, event);
       }
     }
     tokens = run.tokens;
@@ -504,7 +512,7 @@ export async function executeRun(
     }
     totalSteps = Math.max(totalSteps, stepCount(events));
     errorType = isTimeoutFailure(err) ? "timeout" : "platform";
-    await emitRunEvent(events, options.onEvent, {
+    await emitRunEvent(config, events, options.onEvent, {
       t: 0,
       kind: "fail",
       text: "Run failed before completion",
@@ -527,7 +535,7 @@ export async function executeRun(
         status = "errored";
         errorType = "platform";
       }
-      await emitRunEvent(events, options.onEvent, {
+      await emitRunEvent(config, events, options.onEvent, {
         t: 0,
         kind: "fail",
         text: "Product cleanup failed",
@@ -541,7 +549,7 @@ export async function executeRun(
       if (status !== "errored") {
         status = "errored";
         errorType = "platform";
-        await emitRunEvent(events, options.onEvent, {
+        await emitRunEvent(config, events, options.onEvent, {
           t: 0,
           kind: "fail",
           text: "Sandbox teardown failed",
