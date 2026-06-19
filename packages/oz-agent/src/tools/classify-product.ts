@@ -69,6 +69,61 @@ function envNameFromLabel(productName: string, label: string): string {
   return `${product}_${suffix || "API_KEY"}`;
 }
 
+const UPPERCASE_ENV_NOISE = new Set([
+  "API",
+  "CLI",
+  "CSS",
+  "DELETE",
+  "GET",
+  "HTML",
+  "HTTP",
+  "HTTPS",
+  "JSON",
+  "PATCH",
+  "POST",
+  "PUT",
+  "REST",
+  "SDK",
+  "SQL",
+  "URL",
+]);
+
+const ENV_PARTS = new Set([
+  "ACCOUNT",
+  "API",
+  "APP",
+  "AUTH",
+  "BASE",
+  "BEARER",
+  "CLIENT",
+  "DATABASE",
+  "ENDPOINT",
+  "HOST",
+  "ID",
+  "KEY",
+  "NAME",
+  "ORG",
+  "ORGANIZATION",
+  "PASSWORD",
+  "PROJECT",
+  "REGION",
+  "SECRET",
+  "TENANT",
+  "TOKEN",
+  "URL",
+  "USER",
+  "USERNAME",
+  "WORKSPACE",
+]);
+
+function looksLikeUppercaseEnvName(name: string): boolean {
+  if (UPPERCASE_ENV_NOISE.has(name)) return false;
+  const parts = name.split("_").filter(Boolean);
+  if (parts.length < 2) return false;
+  if (!parts.some((part) => ENV_PARTS.has(part))) return false;
+  return parts.some((part) => /^(KEY|TOKEN|SECRET|PASSWORD|AUTH|BEARER|ID|URL|REGION|HOST|ENDPOINT|NAME)$/.test(part));
+}
+
 function envRequirements(text: string, productName: string): ProductEnvRequirement[] {
   const names = new Map<string, { description: string; required: boolean }>();
   const add = (name: string, description: string, required = true) => {
@@ -80,8 +135,7 @@ function envRequirements(text: string, productName: string): ProductEnvRequireme
   };
   for (const match of text.matchAll(/\b[A-Z][A-Z0-9_]{3,}\b/g)) {
     const name = match[0];
-    if (/^(HTTP|JSON|REST|SDK|API|URL|GET|POST|PUT|PATCH|DELETE|CLI|HTML|CSS)$/.test(name)) continue;
-    if (/(KEY|TOKEN|SECRET|API|AUTH|PROJECT|REGION|ORG|WORKSPACE)/.test(name)) add(name, "Detected uppercase environment variable from documentation.");
+    if (looksLikeUppercaseEnvName(name)) add(name, "Detected uppercase environment variable from documentation.");
   }
   for (const match of text.matchAll(/\b([a-z][a-z0-9-]*(?:key|token|secret|credential)[a-z0-9-]*|x-[a-z0-9-]*(?:key|token|secret)[a-z0-9-]*)\b/gi)) {
     const label = match[1];

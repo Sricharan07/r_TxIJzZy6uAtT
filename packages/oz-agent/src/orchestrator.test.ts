@@ -156,6 +156,7 @@ describe("OzOrchestrator", () => {
           <h1>Authentication</h1>
           <p>Use curl against https://service.usemoss.dev/v1.</p>
           <p>All operations require the projectId field in the JSON body.</p>
+          <p>VAPI can be connected through a separate integration guide.</p>
           <pre><code>curl -X POST "https://service.usemoss.dev/v1/manage" -H "x-project-key: &lt;project-key&gt;" -H "x-service-version: v1" -d '{"action":"listIndexes","projectId":"project_123"}'</code></pre>
         `);
       }
@@ -170,6 +171,7 @@ describe("OzOrchestrator", () => {
     expect(ready.state.productProfile?.sdks).toHaveLength(0);
     expect(ready.state.productProfile?.requiredEnv.map((env) => env.name)).toContain("MOSS_PROJECT_KEY");
     expect(ready.state.productProfile?.requiredEnv.map((env) => env.name)).toContain("MOSS_PROJECT_ID");
+    expect(ready.state.productProfile?.requiredEnv.map((env) => env.name)).not.toContain("VAPI");
     expect(ready.state.suiteDraft?.scenarios.some((scenario) => scenario.id === "http_client_init")).toBe(true);
     expect(ready.state.suiteDraft?.scenarios.some((scenario) => scenario.id === "sdk_import_init")).toBe(false);
     const firstCall = ready.state.suiteDraft?.scenarios.find((scenario) => scenario.id === "first_successful_call");
