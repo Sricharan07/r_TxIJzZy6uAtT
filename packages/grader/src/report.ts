@@ -84,7 +84,7 @@ function replayCommand(assertion: Assertion): string {
         ? `grep -F -- ${shellQuote(assertion.config.contains)} ${shellQuote(assertion.config.path)}`
         : `test -f ${shellQuote(assertion.config.path)}`;
     case "llm":
-      return "test -f README.md && sed -n '1,160p' README.md";
+      return "find . -maxdepth 5 -type f \\( -path './src/*' -o -name 'package.json' -o -name 'README.md' \\) -not -path './node_modules/*' -not -path './.git/*' -print";
   }
 }
 
@@ -214,25 +214,24 @@ function findingFromFailedVerdict(
   };
 }
 
+function findingStatusRank(status: Finding["status"]): number {
+  if (status === "confirmed") return 0;
+  if (status === "unverified") return 1;
+  if (status === "advisory") return 2;
+  return 3;
+}
+
 function sortFindings(findings: Finding[]): Finding[] {
   return [...findings].sort((a, b) => {
     const severityDelta = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
     if (severityDelta !== 0) return severityDelta;
-    if (a.status !== b.status) return a.status === "confirmed" ? -1 : 1;
+    if (a.status !== b.status) return findingStatusRank(a.status) - findingStatusRank(b.status);
     return a.title.localeCompare(b.title);
   });
 }
 
-function remediationProjection(findings: Finding[]): GradeReport["remediationProjection"] {
-  const confirmed = findings.filter((finding) => finding.status === "confirmed");
-  if (confirmed.length === 0) return undefined;
-  return {
-    score: 100,
-    letter: "A+",
-    summary: `Fixing ${confirmed.length} confirmed finding${
-      confirmed.length === 1 ? "" : "s"
-    } would project this task to A+ if all deterministic assertions then pass.`,
-  };
+function blocksTask(finding: Finding): boolean {
+  return finding.status === "confirmed" || finding.status === "unverified";
 }
 
 export function buildGradeReport({
@@ -274,7 +273,7 @@ export function buildGradeReport({
       ...traceFindings,
     ],
   );
-  const taskPassed = findings.every((finding) => finding.status !== "confirmed");
+  const taskPassed = findings.every((finding) => !blocksTask(finding));
   const runs = 1;
   const passedRuns = taskPassed ? 1 : 0;
   const score = computeGradeScore({ passedRuns, runs, findings });
@@ -300,7 +299,7 @@ export function buildGradeReport({
     traceMetrics,
     definitionOfDone: [],
     generatedAt,
-    remediationProjection: remediationProjection(findings),
+    remediationProjection: undefined,
   };
   return { ...report, definitionOfDone: definitionChecksFor(report) };
 }

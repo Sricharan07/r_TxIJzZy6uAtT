@@ -64,6 +64,25 @@ describe("executeRun", () => {
     expect(result.gradeReport?.findings.every((finding) => finding.status === "advisory")).toBe(true);
   });
 
+  it("generates a unique run id for repeated direct executions of the same config", async () => {
+    const first = await executeRun(config, {
+      evalId: "eval_test",
+      evalTitle: "Checkout Eval",
+      sandbox: new LocalSandbox("run-id-test-a"),
+      agent: successfulAgent,
+    });
+    const second = await executeRun(config, {
+      evalId: "eval_test",
+      evalTitle: "Checkout Eval",
+      sandbox: new LocalSandbox("run-id-test-b"),
+      agent: successfulAgent,
+    });
+
+    expect(first.id).toMatch(/^run_/);
+    expect(second.id).toMatch(/^run_/);
+    expect(first.id).not.toBe(second.id);
+  });
+
   it("classifies a hard sandbox timeout separately from platform errors", async () => {
     const hangingAgent: Agent = {
       type: "claude-code",

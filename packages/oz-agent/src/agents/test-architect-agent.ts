@@ -5,7 +5,7 @@ import type { OzToolContext } from "../tools/contracts.js";
 export async function runTestArchitectAgent(state: OzAgentState, ctx: OzToolContext): Promise<OzAgentState> {
   if (!state.productProfile) throw new Error("Product profile is required before generating scenarios.");
   const { scenarios } = await generateScenariosTool.execute(
-    { profile: state.productProfile, userGoal: state.input.userGoal },
+    { profile: state.productProfile, research: state.research, userGoal: state.input.userGoal },
     ctx,
   );
   const suiteDraft: OzSuiteDraft = {

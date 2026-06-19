@@ -406,6 +406,93 @@ describe("grade", () => {
     expect(finding?.evidence[0]?.replayCmd).toContain("curl -i -X POST");
   });
 
+  it("does not accept an agent-written ok result without an independent success oracle", async () => {
+    const result = await gradeWithReport(
+      {
+        ...staticConfig("Build a product integration."),
+        assertions: [
+          { type: "shell", name: "Result contract reports success", config: { command: "node src/index.mjs" } },
+        ],
+      },
+      new ProjectSandbox({
+        "src/index.mjs": "console.log('HTTP 200');",
+        "src/oz-result.json": JSON.stringify({ ok: true, operation: "query", httpStatus: 200 }),
+      }),
+      { runId: "run_unverified_success", generatedAt: "2026-06-01T00:00:00.000Z" },
+    );
+
+    const finding = result.gradeReport.findings.find((item) => item.code === "integration_success_unverified");
+    expect(finding).toMatchObject({
+      status: "unverified",
+      severity: "high",
+      canHardCap: true,
+    });
+    expect(result.gradeReport.taskPassed).toBe(false);
+  });
+
+  it("accepts an agent result claim when a success probe independently passes", async () => {
+    const result = await gradeWithReport(
+      {
+        ...staticConfig("Build a product integration."),
+        assertions: [
+          { type: "shell", name: "Result contract reports success", config: { command: "node src/index.mjs" } },
+        ],
+        dynamicProbes: [
+          {
+            name: "Created resource is readable",
+            url: "http://localhost:3000/oz-oracle/resource",
+            expectStatus: 200,
+            expectBodyContains: "resource-id",
+            verificationRole: "success",
+            codeOnFail: "product_success_not_observed",
+          },
+        ],
+      },
+      new ProjectSandbox(
+        {
+          "src/index.mjs": "console.log('HTTP 200');",
+          "src/oz-result.json": JSON.stringify({ ok: true, operation: "query", httpStatus: 200 }),
+        },
+        {
+          "GET http://localhost:3000/oz-oracle/resource": { status: 200, body: "resource-id" },
+        },
+      ),
+      { runId: "run_verified_success", generatedAt: "2026-06-01T00:00:00.000Z" },
+    );
+
+    expect(findingCodes(result.gradeReport)).not.toContain("integration_success_unverified");
+    expect(result.gradeReport.taskPassed).toBe(true);
+  });
+
+  it("feeds implementation source files to the LLM judge", async () => {
+    let judgedArtifacts = "";
+    await gradeWithReport(
+      {
+        ...staticConfig("Build a source integration."),
+        assertions: [
+          { type: "llm", name: "Implementation follows docs", config: { criterion: "uses documented API" } },
+        ],
+      },
+      new ProjectSandbox({
+        "README.md": "Run the integration.",
+        "src/index.mjs": "export const usedDocumentedApi = true;",
+      }),
+      {
+        runId: "run_judge_sources",
+        generatedAt: "2026-06-01T00:00:00.000Z",
+        judge: {
+          async judge(_criterion, artifacts) {
+            judgedArtifacts = artifacts;
+            return { passed: true, reasoning: "Saw source." };
+          },
+        },
+      },
+    );
+
+    expect(judgedArtifacts).toContain("--- src/index.mjs ---");
+    expect(judgedArtifacts).toContain("usedDocumentedApi");
+  });
+
   it("infers forged webhook dynamic probes", async () => {
     const result = await gradeWithReport(
       staticConfig("Set up a webhook handler for payment_succeeded events."),

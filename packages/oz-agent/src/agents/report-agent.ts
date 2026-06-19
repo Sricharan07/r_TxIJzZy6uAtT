@@ -1,4 +1,4 @@
-import type { OzAgentState, OzFrictionInsight, OzRecommendedFix, OzReport, RunResult } from "@kiln/shared";
+import type { OzAgentState, OzFrictionInsight, OzRecommendedFix, OzReport, RunResult, Severity } from "@kiln/shared";
 import { analyzeRunFailure } from "./failure-analyst-agent.js";
 import { analyzeFriction, behaviorSummaryFor } from "./friction-analyst-agent.js";
 
@@ -68,16 +68,43 @@ function recommendedFixes(
     .slice(0, 8);
 }
 
+function severityRank(severity: Severity): number {
+  return { critical: 0, high: 1, medium: 2, low: 3 }[severity];
+}
+
+function researchFrictionInsights(state: OzAgentState): OzFrictionInsight[] {
+  return (state.research?.conflicts ?? []).map((conflict): OzFrictionInsight => ({
+    id: `research:${conflict.id}`,
+    category: conflict.category,
+    title: conflict.title,
+    severity: conflict.severity,
+    status: conflict.status,
+    affectedRunIds: [],
+    confidence: conflict.confidence,
+    behavior: `Oz found conflicting source claims: ${conflict.claims.map((claim) => `${claim.sourceType}:${claim.value}`).join(", ")}.`,
+    recommendation: conflict.recommendation,
+    traceEvidence: [],
+    docsEvidence: conflict.claims.map((claim) => claim.evidence).slice(0, 4),
+  }));
+}
+
 export function buildOzReport(state: OzAgentState, runs: RunResult[]): OzReport {
   const evidence = state.productProfile?.evidence ?? [];
   const reportableRuns = runs.filter((run) => run.status !== "canceled");
   const rawFindings = reportableRuns.flatMap((run) => analyzeRunFailure(run, evidence));
   const findings = [...new Map(rawFindings.map((finding) => [finding.code, finding])).values()];
   const behaviorSummary = behaviorSummaryFor(reportableRuns);
-  const frictionInsights = analyzeFriction(state, reportableRuns);
+  const frictionInsights = [...researchFrictionInsights(state), ...analyzeFriction(state, reportableRuns)]
+    .filter((insight, index, all) => all.findIndex((item) => item.id === insight.id) === index)
+    .sort((a, b) => {
+      const severityDelta = severityRank(a.severity) - severityRank(b.severity);
+      if (severityDelta !== 0) return severityDelta;
+      if (a.status !== b.status) return a.status === "confirmed" ? -1 : b.status === "confirmed" ? 1 : 0;
+      return b.confidence - a.confidence;
+    });
   const passed = reportableRuns.filter((run) =>
     run.status === "completed"
-    && (run.gradeReport ? run.gradeReport.taskPassed : run.verdicts.every((verdict) => verdict.type === "llm" || verdict.passed))
+    && run.gradeReport?.taskPassed === true
   ).length;
   const platformFindings = findings.filter((finding) =>
     finding.code.startsWith("platform_") || finding.code === "agent_cli_failure" || finding.code === "sandbox_failure",

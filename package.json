@@ -18,6 +18,7 @@
     "db:migrate": "node scripts/migrate.mjs",
     "verify:prod-env": "node scripts/verify-production-env.mjs",
     "smoke:production": "node scripts/smoke-production.mjs",
+    "smoke:oz-product": "node scripts/smoke-oz-product.mjs",
     "smoke:firecracker": "node scripts/smoke-firecracker.mjs",
     "self-host:env": "node scripts/bootstrap-self-hosted-env.mjs",
     "self-host:up": "docker compose --env-file .env -f infra/self-host/docker-compose.yml up -d",

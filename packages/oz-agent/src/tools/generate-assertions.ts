@@ -63,6 +63,19 @@ function grepLiteralAssertion(name: string, value: string): Assertion {
   };
 }
 
+function advisoryPatternAssertion(name: string, pattern: string, frictionCode: string): Assertion {
+  return {
+    type: "shell",
+    name,
+    config: { command: grepExistingPathsCommand(pattern, { paths: ["src", "README.md"] }) },
+    required: false,
+    severityOnFail: "low",
+    frictionCode,
+    canHardCap: false,
+    codeVsNoCode: "mixed",
+  };
+}
+
 function documentedSurfaceAssertions(profile: OzProductProfile): Assertion[] {
   const surfaces = new Set<string>();
   for (const api of profile.APIs) {
@@ -105,25 +118,25 @@ function scenarioAssertions(profile: OzProductProfile, scenario: OzScenario): As
   }
   assertions.push(...secretLeakAssertions(profile));
   if (scenario.id.includes("auth")) {
-    assertions.push({
-      type: "shell",
-      name: "Missing credential path is documented",
-      config: { command: grepExistingPathsCommand("missing|required|API", { paths: ["src", "README.md"] }) },
-    });
+    assertions.push(advisoryPatternAssertion(
+      "Missing credential path is documented",
+      "missing|required|credential|environment variable|process\\.env",
+      "credential_error_path_not_referenced",
+    ));
   }
   if (scenario.id.includes("webhook")) {
-    assertions.push({
-      type: "shell",
-      name: "Webhook signature verification is implemented",
-      config: { command: grepExistingPathsCommand("signature|verify", { paths: ["src", "README.md"] }) },
-    });
+    assertions.push(advisoryPatternAssertion(
+      "Webhook signature verification is referenced",
+      "signature|verify",
+      "webhook_signature_not_referenced",
+    ));
   }
   if (scenario.id.includes("idempot")) {
-    assertions.push({
-      type: "shell",
-      name: "Idempotency is handled",
-      config: { command: grepExistingPathsCommand("idempot", { paths: ["src", "README.md"] }) },
-    });
+    assertions.push(advisoryPatternAssertion(
+      "Idempotency is referenced",
+      "idempot",
+      "idempotency_not_referenced",
+    ));
   }
   assertions.push({
     type: "llm",

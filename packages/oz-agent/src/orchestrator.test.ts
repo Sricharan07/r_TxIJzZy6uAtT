@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { OzAgentState, RunResult } from "@kiln/shared";
+import type { GradeReport, OzAgentState, RunResult } from "@kiln/shared";
 import { JsonKilnStore } from "@kiln/shared/store";
 import { OzOrchestrator } from "./orchestrator";
 import { buildOzReport, observeRunEvent } from "./index";
 import { buildDocsMap } from "./agents/docs-mapper-agent";
+import { runDocsResearchAgent } from "./agents/docs-research-agent";
 import { scenarioToEvalConfig } from "./eval-config";
 
 function response(body: string, status = 200): Response {
@@ -77,6 +78,29 @@ function reportRun(patch: Partial<RunResult>): RunResult {
     events: [],
     verdicts: [],
     ...patch,
+  };
+}
+
+function passingGradeReport(runId = "run-1"): GradeReport {
+  return {
+    runId,
+    taskSpecId: "task",
+    mode: "integration-build",
+    buildPhase: "slice-1",
+    taskPassed: true,
+    score: {
+      raw: 100,
+      capped: 100,
+      letter: "A+",
+      passRate: 1,
+      confidenceInterval: { low: 0.21, high: 1 },
+      runs: 1,
+      passedRuns: 1,
+    },
+    findings: [],
+    agentMatrix: [],
+    definitionOfDone: [],
+    generatedAt: "2026-01-01T00:00:31.000Z",
   };
 }
 
@@ -278,6 +302,241 @@ describe("OzOrchestrator", () => {
     expect(sdkConfig.productProfile?.runtime).toMatchObject({ image: "ubuntu-24.04-node22", nodeVersion: ">=22" });
   });
 
+  it("researches cross-source claims and reports docs/package inconsistencies", async () => {
+    const researchFetch: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url === "https://registry.npmjs.org/%40moss-dev%2Fmoss") {
+        return new Response(JSON.stringify({
+          "dist-tags": { latest: "1.1.0" },
+          versions: {
+            "1.1.0": {
+              version: "1.1.0",
+              license: "PolyForm Shield",
+              engines: { node: ">=20" },
+              types: "dist/moss.d.ts",
+              main: "dist/index.js",
+              repository: { url: "https://github.com/usemoss/moss.git", directory: "packages/moss" },
+            },
+          },
+          readme: "Without loadIndex(): every query() call goes to the cloud API.",
+        }), { status: 200 });
+      }
+      if (url === "https://unpkg.com/@moss-dev/moss@1.1.0/package.json") {
+        return new Response(JSON.stringify({
+          name: "@moss-dev/moss",
+          version: "1.1.0",
+          license: "PolyForm Shield",
+          engines: { node: ">=20" },
+          types: "dist/moss.d.ts",
+          main: "dist/index.js",
+          repository: { url: "https://github.com/usemoss/moss.git", directory: "packages/moss" },
+        }), { status: 200 });
+      }
+      if (url === "https://unpkg.com/@moss-dev/moss@1.1.0/dist/moss.d.ts") {
+        return new Response([
+          "export declare class MossClient {",
+          "  constructor(input: unknown);",
+          "}",
+          "export declare class SessionIndex {",
+          "  static create(client: MossClient, input: unknown): Promise<SessionIndex>;",
+          "  addDocs(input: unknown): Promise<void>;",
+          "  query(input: string): Promise<unknown>;",
+          "}",
+        ].join("\n"), { status: 200 });
+      }
+      if (url === "https://unpkg.com/@moss-dev/moss@1.1.0/dist/index.js") {
+        return new Response("export {}", { status: 200 });
+      }
+      if (url === "https://raw.githubusercontent.com/usemoss/moss/main/README.md") {
+        return new Response([
+          "# Moss",
+          "Requires Node.js 20+.",
+          "License: BSD-2-Clause.",
+        ].join("\n"), { status: 200 });
+      }
+      if (url === "https://raw.githubusercontent.com/usemoss/moss/v1.1.0/packages/moss/README.md") {
+        return new Response([
+          "# Moss package",
+          "Requires Node.js 20+.",
+          "Without loadIndex(): every query() call goes to the cloud API.",
+        ].join("\n"), { status: 200 });
+      }
+      if (url === "https://raw.githubusercontent.com/usemoss/moss/v1.1.0/packages/moss/package.json") {
+        return new Response(JSON.stringify({
+          name: "@moss-dev/moss",
+          license: "PolyForm Shield",
+          engines: { node: ">=20" },
+        }), { status: 200 });
+      }
+      if (url === "https://raw.githubusercontent.com/usemoss/moss/main/package.json") {
+        return new Response(JSON.stringify({ license: "BSD-2-Clause", engines: { node: ">=20" } }), { status: 200 });
+      }
+      if (url.includes("registry.npmjs.org")) return new Response("{}", { status: 404 });
+      if (url.endsWith("/sitemap.xml")) {
+        return response("<urlset><url><loc>https://moss-research.test/docs/start/quickstart</loc></url></urlset>");
+      }
+      if (url.includes("/docs/start/quickstart")) {
+        return response(`
+          <title>Moss Quickstart</title>
+          <h1>Quickstart</h1>
+          <p>Prerequisites: Node.js 18+ or Python 3.10+.</p>
+          <p>Valid Moss project credentials: MOSS_PROJECT_ID and MOSS_PROJECT_KEY.</p>
+          <pre><code>npm install @moss-dev/moss</code></pre>
+          <pre><code>
+            import { MossClient, SessionIndex, CloudIndex } from "@moss-dev/moss";
+            const client = new MossClient({ projectId: process.env.MOSS_PROJECT_ID, apiKey: process.env.MOSS_PROJECT_KEY });
+            const index = await SessionIndex.create(client, { name: "kiln" });
+            await index.loadIndex();
+            await index.addDocs([{ id: "1", text: "hello" }]);
+            await index.query("hello");
+          </code></pre>
+          <p>Use x-project-key and projectId for REST API calls.</p>
+          <p>Call loadIndex() before query().</p>
+        `);
+      }
+      return response(`
+        <title>Moss</title>
+        <a href="/docs/start/quickstart">Quickstart</a>
+        <a href="https://github.com/usemoss/moss">GitHub</a>
+      `);
+    };
+    const store = new JsonKilnStore(`/tmp/kiln-oz-research-${Date.now()}.json`);
+    const user = await store.getOrCreateDevUser();
+    const oz = new OzOrchestrator({ store, fetchImpl: researchFetch });
+    const job = await oz.createJob({ userId: user.id, productUrl: "https://moss-research.test", mode: "copilot" });
+    const ready = await oz.runToApproval(job.id);
+
+    const conflictIds = ready.state.research?.conflicts.map((conflict) => conflict.id) ?? [];
+    expect(conflictIds).toEqual(expect.arrayContaining([
+      "runtime-node-version-mismatch",
+      "license-claim-mismatch",
+      "auth-shape-ambiguity",
+      "query-load-semantics-ambiguous",
+      "sdk-symbols-missing-moss-dev-moss",
+      "sdk-methods-missing-moss-dev-moss",
+    ]));
+    const artifact = (await store.listOzArtifacts(job.id)).find((item) => item.type === "research_report");
+    expect(artifact?.data).toMatchObject({ conflicts: expect.any(Array), claims: expect.any(Array) });
+    expect(ready.state.research?.checkedSources).toContain("https://raw.githubusercontent.com/usemoss/moss/v1.1.0/packages/moss/package.json");
+    expect(ready.state.suiteDraft?.scenarios.map((scenario) => scenario.id)).toEqual(expect.arrayContaining([
+      "sdk_symbol_claim_consistency_moss_dev_moss",
+      "sdk_method_claim_consistency_moss_dev_moss",
+      "sdk_query_load_semantics",
+      "auth_claim_mapping_consistency",
+      "runtime_claim_consistency_node",
+    ]));
+    const sdkSymbolScenario = ready.state.suiteDraft?.scenarios.find((scenario) => scenario.id === "sdk_symbol_claim_consistency_moss_dev_moss");
+    expect(sdkSymbolScenario?.assertions.map((assertion) => assertion.name)).toEqual(expect.arrayContaining([
+      expect.stringContaining("Published SDK exports documented symbols"),
+    ]));
+    const sdkMethodScenario = ready.state.suiteDraft?.scenarios.find((scenario) => scenario.id === "sdk_method_claim_consistency_moss_dev_moss");
+    expect(sdkMethodScenario?.assertions.map((assertion) => assertion.name)).toEqual(expect.arrayContaining([
+      expect.stringContaining("Installed SDK contains documented methods"),
+    ]));
+    const events = await store.listOzEvents(job.id);
+    expect(events.some((event) => event.kind === "finding.created" && event.message.includes("Node runtime"))).toBe(true);
+
+    const report = buildOzReport(ready.state, [reportRun({ gradeReport: passingGradeReport() })]);
+    expect(report.frictionInsights.map((insight) => insight.id)).toEqual(expect.arrayContaining([
+      "research:runtime-node-version-mismatch",
+      "research:license-claim-mismatch",
+      "research:auth-shape-ambiguity",
+      "research:query-load-semantics-ambiguous",
+      "research:sdk-symbols-missing-moss-dev-moss",
+      "research:sdk-methods-missing-moss-dev-moss",
+    ]));
+    expect(report.recommendedFixes.some((fix) => fix.title === "Node runtime requirement is inconsistent across sources")).toBe(true);
+  });
+
+  it("does not turn unavailable package probe sources into SDK conflicts", async () => {
+    const state = reportState();
+    state.productProfile!.sdks = [{
+      ...state.productProfile!.sdks[0]!,
+      packageName: "@acme/sdk",
+      symbols: ["AcmeClient"],
+      methods: ["createWidget"],
+    }];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url === "https://registry.npmjs.org/%40acme%2Fsdk") {
+        return new Response(JSON.stringify({
+          "dist-tags": { latest: "2.0.0" },
+          versions: {
+            "2.0.0": {
+              version: "2.0.0",
+              types: "dist/index.d.ts",
+              main: "dist/index.js",
+            },
+          },
+        }), { status: 200 });
+      }
+      if (url.startsWith("https://unpkg.com/@acme/sdk@2.0.0/")) {
+        return new Response("temporary upstream outage", { status: 503 });
+      }
+      return new Response("", { status: 404 });
+    };
+
+    const researched = await runDocsResearchAgent(state, { jobId: "job-1", userId: "user-1", fetchImpl });
+    const conflictIds = researched.research?.conflicts.map((conflict) => conflict.id) ?? [];
+    expect(conflictIds).not.toEqual(expect.arrayContaining([
+      "sdk-types-unavailable-acme-sdk",
+      "sdk-symbols-missing-acme-sdk",
+      "sdk-methods-missing-acme-sdk",
+      "package-entrypoint-missing-acme-sdk",
+    ]));
+    expect(researched.research?.checkedSources).toEqual(expect.arrayContaining([
+      "https://unpkg.com/@acme/sdk@2.0.0/package.json",
+      "https://unpkg.com/@acme/sdk@2.0.0/dist/index.d.ts",
+    ]));
+  });
+
+  it("researches Python package runtime and import-name inconsistencies", async () => {
+    const state = reportState();
+    state.discovery.selectedDocs = [{
+      url: "https://example.test/docs/python",
+      title: "Python SDK",
+      text: [
+        "Python 3.10+ is required.",
+        "pip install acme-vector",
+        "from acme_vector import VectorClient",
+      ].join("\n"),
+      links: [],
+      fetchedAt: "2026-01-01T00:00:00.000Z",
+    }];
+    state.discovery.packages = [{
+      manager: "pip",
+      name: "acme-vector",
+      confidence: 0.9,
+      evidence: [{ source: "https://example.test/docs/python", quote: "pip install acme-vector", confidence: 0.9 }],
+    }];
+    state.productProfile!.sdks = [{
+      language: "python",
+      manager: "pip",
+      packageName: "acme-vector",
+      evidence: [{ source: "https://example.test/docs/python", quote: "pip install acme-vector", confidence: 0.9 }],
+    }];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url === "https://pypi.org/pypi/acme-vector/json") {
+        return new Response(JSON.stringify({
+          info: {
+            version: "1.0.0",
+            license: "MIT",
+            requires_python: ">=3.11",
+            description: "Use `from acme import VectorClient` after installation.",
+          },
+        }), { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    };
+
+    const researched = await runDocsResearchAgent(state, { jobId: "job-1", userId: "user-1", fetchImpl });
+    expect(researched.research?.conflicts.map((conflict) => conflict.id)).toEqual(expect.arrayContaining([
+      "runtime-python-version-mismatch",
+      "python-import-module-mismatch-acme-vector",
+    ]));
+  });
+
   it("keeps Oz run observations compact", () => {
     const event = observeRunEvent("job-1", "running", {
       t: 1,
@@ -364,6 +623,7 @@ describe("OzOrchestrator", () => {
         { assertionIndex: 0, type: "file", name: "entry exists", passed: true },
         { assertionIndex: 1, type: "llm", name: "advisory pattern check", passed: false },
       ],
+      gradeReport: passingGradeReport("run-advisory"),
     };
     const report = buildOzReport({
       jobId: "job-1",
@@ -376,7 +636,7 @@ describe("OzOrchestrator", () => {
     expect(report.findings).toEqual([]);
   });
 
-  it("classifies runtime success with advisory surface failures as a harness issue", () => {
+  it("does not classify self-attested HTTP text as runtime success", () => {
     const run: RunResult = {
       id: "run-harness",
       evalId: "eval-1",
@@ -436,8 +696,8 @@ describe("OzOrchestrator", () => {
       discovery: { docsCandidates: [], selectedDocs: [], githubRepos: [], packages: [], codeExamples: [] },
     }, [run]);
 
-    expect(report.findings[0]?.code).toBe("harness_issue");
-    expect(report.recommendedFixes[0]?.target).toBe("tests");
+    expect(report.findings[0]?.code).not.toBe("docs_ambiguous");
+    expect(report.findings[0]?.code).not.toBe("harness_issue");
   });
 
   it("classifies secret-print failures as agent security issues", () => {
@@ -490,6 +750,7 @@ describe("OzOrchestrator", () => {
         { assertionIndex: 1, type: "shell", name: "Project command succeeds", passed: true, output: "HTTP 200" },
         { assertionIndex: 2, type: "shell", name: "Result contract reports success", passed: true, output: '{"ok":true}' },
       ],
+      gradeReport: passingGradeReport(),
     })]);
 
     expect(report.behaviorSummary).toMatchObject({ totalRuns: 1, passedRuns: 1, failedRuns: 0 });
@@ -549,6 +810,7 @@ describe("OzOrchestrator", () => {
         { assertionIndex: 1, type: "shell", name: "Project command succeeds", passed: true, output: "HTTP 200" },
         { assertionIndex: 2, type: "shell", name: "Result contract reports success", passed: true, output: '{"ok":true}' },
       ],
+      gradeReport: passingGradeReport(),
     })]);
 
     expect(report.findings).toEqual([]);

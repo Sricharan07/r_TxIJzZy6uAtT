@@ -74,12 +74,37 @@ function configuredSeverity(probe: DynamicProbe): Severity {
   return probe.severityOnFail ?? "high";
 }
 
-async function runConfiguredProbes(context: StaticGraderContext): Promise<Finding[]> {
-  const findings: Finding[] = [];
+interface ProbeRun {
+  probe: DynamicProbe;
+  request: HttpRequest;
+  status: number;
+  body: string;
+  failure: string | null;
+}
+
+function isSuccessProbe(probe: DynamicProbe): boolean {
+  return probe.verificationRole === "success";
+}
+
+async function executeConfiguredProbes(context: StaticGraderContext): Promise<ProbeRun[]> {
+  const runs: ProbeRun[] = [];
   for (const probe of context.config.dynamicProbes ?? []) {
     const request = configuredProbeToRequest(probe);
     const result = await context.sandbox.httpRequest(request);
-    const failure = probeFailed(probe, result.status, result.body);
+    runs.push({
+      probe,
+      request,
+      status: result.status,
+      body: result.body,
+      failure: probeFailed(probe, result.status, result.body),
+    });
+  }
+  return runs;
+}
+
+function configuredProbeFindings(context: StaticGraderContext, probeRuns: ProbeRun[]): Finding[] {
+  const findings: Finding[] = [];
+  for (const { probe, request, status, body, failure } of probeRuns) {
     if (!failure) continue;
     findings.push(
       makeFinding({
@@ -93,7 +118,7 @@ async function runConfiguredProbes(context: StaticGraderContext): Promise<Findin
           makeEvidence({
             type: "dynamic",
             replayCmd: replayFor(request),
-            excerpt: `${failure}\nHTTP ${result.status}\n${result.body}`,
+            excerpt: `${failure}\nHTTP ${status}\n${body}`,
             observedAt: context.observedAt,
           }),
         ],
@@ -101,6 +126,53 @@ async function runConfiguredProbes(context: StaticGraderContext): Promise<Findin
     );
   }
   return findings;
+}
+
+function parseAgentResultClaim(contents: string | null): Record<string, unknown> | null {
+  if (!contents) return null;
+  try {
+    const parsed = JSON.parse(contents) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+async function runSuccessClaimVerifier(
+  context: StaticGraderContext,
+  probeRuns: ProbeRun[],
+): Promise<Finding[]> {
+  const claim = parseAgentResultClaim(await context.sandbox.readFile("src/oz-result.json"));
+  if (claim?.ok !== true) return [];
+  const successProbeRuns = probeRuns.filter((run) => isSuccessProbe(run.probe));
+  if (successProbeRuns.some((run) => run.failure === null)) return [];
+  const evidenceLines = [
+    "src/oz-result.json claims ok:true, but Kiln did not observe an independent success oracle for this scenario.",
+    successProbeRuns.length === 0
+      ? "No dynamic probe with verificationRole:'success' was configured."
+      : `Configured success probes failed: ${successProbeRuns.map((run) => `${run.probe.name} -> HTTP ${run.status}`).join(", ")}.`,
+    `Agent claim: ${JSON.stringify(claim)}`,
+  ];
+  return [
+    makeFinding({
+      context,
+      code: "integration_success_unverified",
+      title: "Agent-reported success was not independently verified",
+      severity: "high",
+      status: "unverified",
+      canHardCap: true,
+      evidence: [
+        makeEvidence({
+          type: "dynamic",
+          replayCmd: "test -s src/oz-result.json && cat src/oz-result.json",
+          excerpt: evidenceLines.join("\n"),
+          observedAt: context.observedAt,
+          artifactRefs: ["src/oz-result.json"],
+        }),
+      ],
+    }),
+  ];
 }
 
 function inferredWebhookUrls(context: StaticGraderContext): string[] {
@@ -209,8 +281,10 @@ async function runMalformedInputProbe(context: StaticGraderContext): Promise<Fin
 }
 
 export async function runDynamicGraders(context: StaticGraderContext): Promise<Finding[]> {
+  const configuredProbeRuns = await executeConfiguredProbes(context);
   const groups = await Promise.all([
-    runConfiguredProbes(context),
+    Promise.resolve(configuredProbeFindings(context, configuredProbeRuns)),
+    runSuccessClaimVerifier(context, configuredProbeRuns),
     runWebhookForgeryProbe(context),
     runMalformedInputProbe(context),
   ]);

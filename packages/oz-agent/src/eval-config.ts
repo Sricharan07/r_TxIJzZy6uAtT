@@ -35,6 +35,15 @@ function primarySdkPackage(state: OzAgentState, language: Language): string | un
   return state.productProfile?.sdks.find((sdk) => sdk.language === language)?.packageName;
 }
 
+function languageForScenario(state: OzAgentState, scenario: OzScenario, profile: ProductProfile | undefined): Language {
+  if (scenario.id.includes("python")) return "python";
+  if (scenario.id.includes("go_") || scenario.id.endsWith("_go")) return "go";
+  if (state.input.preferredLanguage && state.input.preferredLanguage !== "curl") return state.input.preferredLanguage;
+  const singleSdkLanguage = state.productProfile?.sdks.length === 1 ? state.productProfile.sdks[0]?.language : undefined;
+  if (singleSdkLanguage && singleSdkLanguage !== "curl") return singleSdkLanguage;
+  return profile?.runtime.language ?? "node";
+}
+
 function packagesForScenario(packages: ProductPackage[] | undefined, language: Language, scenario: OzScenario, primarySdk?: string): ProductPackage[] {
   if (!scenario.id.includes("sdk")) return [];
   const manager = managerForLanguage(language);
@@ -56,6 +65,20 @@ function runtimeForScenario(runtime: ProductProfile["runtime"], language: Langua
   return { ...runtime, language };
 }
 
+function researchFacts(state: OzAgentState): string {
+  if (!state.research) return "";
+  const conflicts = state.research.conflicts.slice(0, 8).map((conflict) => [
+    `- ${conflict.title} [${conflict.status}, ${conflict.severity}]`,
+    `  Claims: ${conflict.claims.slice(0, 4).map((claim) => `${claim.kind}=${claim.value} (${claim.sourceType})`).join("; ")}`,
+    `  Recommended fix: ${conflict.recommendation}`,
+  ].join("\n"));
+  return [
+    "### Oz research claim consistency",
+    `Checked sources: ${state.research.checkedSources.length}`,
+    conflicts.length ? conflicts.join("\n") : "No cross-source claim conflicts detected.",
+  ].join("\n");
+}
+
 export function scenarioToEvalConfig({
   state,
   scenario,
@@ -68,8 +91,8 @@ export function scenarioToEvalConfig({
   requestedRuns?: number;
 }): EvalConfig {
   const productProfile = ozProductToRunnerProfile(state);
-  const language = (state.input.preferredLanguage === "curl" ? "node" : state.input.preferredLanguage) ?? productProfile?.runtime.language ?? "node";
-  const primarySdk = primarySdkPackage(state, language as Language);
+  const language = languageForScenario(state, scenario, productProfile);
+  const primarySdk = primarySdkPackage(state, language);
   const mergedProfile: ProductProfile | undefined = productProfile
     ? {
         ...productProfile,
@@ -97,12 +120,14 @@ export function scenarioToEvalConfig({
         "Instruction: Use only documented SDKs listed above. If none are listed, use the documented HTTP API/curl examples and do not search package registries.",
       ].join("\n")
     : "";
+  const research = researchFacts(state);
   return {
     task: scenario.task,
     language: language as Language,
     productProfile: mergedProfile,
     context: [
       ...(facts ? [{ type: "paste" as const, label: "Oz product integration facts", content: facts }] : []),
+      ...(research ? [{ type: "paste" as const, label: "Oz research findings", content: research }] : []),
       ...state.discovery.codeExamples.slice(0, 6).map((example) => ({
         type: "paste" as const,
         label: `Example from ${example.sourceUrl}`,

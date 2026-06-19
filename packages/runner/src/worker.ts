@@ -132,10 +132,7 @@ function redisConnection() {
   };
 }
 
-/**
- * Deterministic 32-bit FNV-1a string hash → hex. Used to derive stable run ids
- * from the config (no time/random sources, per conventions).
- */
+/** Deterministic 32-bit FNV-1a string hash → hex. Used only for stable eval ids. */
 function hash(input: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < input.length; i++) {
@@ -146,9 +143,10 @@ function hash(input: string): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-/** Stable run id derived purely from the eval config. */
+/** Unique run id. Re-runs of the same config must accumulate as separate samples. */
 function deriveRunId(config: EvalConfig): string {
-  return `run_${hash(JSON.stringify(config))}`;
+  void config;
+  return `run_${randomUUID()}`;
 }
 
 /** Stable eval id derived purely from the eval config. */

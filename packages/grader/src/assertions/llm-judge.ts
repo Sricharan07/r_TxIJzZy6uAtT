@@ -113,18 +113,51 @@ export class UnconfiguredJudge implements LlmJudge {
   }
 }
 
-/**
- * Gather a small artifact bundle for the judge to look at. Kept deliberately
- * minimal for the MVP: the task summary plus any agent-produced report file if
- * present. A real implementation would assemble the diff and key outputs.
- */
+const JUDGE_PATH_LIMIT = 24;
+const JUDGE_FILE_LIMIT = 6_000;
+const JUDGE_TOTAL_LIMIT = 24_000;
+
+function judgeCandidatePaths(findOutput: string): string[] {
+  const common = [
+    "src/index.mjs",
+    "src/index.js",
+    "src/index.ts",
+    "src/app.mjs",
+    "src/app.js",
+    "src/app.ts",
+    "src/server.js",
+    "src/server.ts",
+    "src/webhook.js",
+    "src/webhook.ts",
+    "package.json",
+    "README.md",
+  ];
+  const found = findOutput
+    .split("\n")
+    .map((line) => line.trim().replace(/^\.\//, ""))
+    .filter(Boolean);
+  return [...new Set([...common, ...found])]
+    .filter((path) => /\.(?:[cm]?[jt]sx?|mjs|cjs|py|go|json|md)$/.test(path))
+    .slice(0, JUDGE_PATH_LIMIT);
+}
+
+function clipBundle(parts: string[]): string {
+  const bundle = parts.join("\n\n");
+  return bundle.length > JUDGE_TOTAL_LIMIT ? `${bundle.slice(0, JUDGE_TOTAL_LIMIT)}\n...[truncated]` : bundle;
+}
+
+/** Gather source and package artifacts so the judge can inspect implementation, not only README text. */
 async function gatherArtifacts(_criterion: string, sandbox: SandboxHandle): Promise<string> {
   const parts: string[] = [];
-  // Best-effort: include a conventional output file if the agent wrote one.
-  const readme = await sandbox.readFile("README.md");
-  if (readme) parts.push(`--- README.md ---\n${readme.slice(0, 4_000)}`);
+  const find = await sandbox.exec(
+    "find . -maxdepth 5 -type f \\( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.py' -o -name '*.go' -o -name 'package.json' -o -name 'README.md' \\) -not -path './node_modules/*' -not -path './.git/*' -not -path './dist/*' -not -path './.next/*'",
+  );
+  for (const path of judgeCandidatePaths(find.code === 0 ? find.stdout : "")) {
+    const contents = await sandbox.readFile(path);
+    if (contents) parts.push(`--- ${path} ---\n${contents.slice(0, JUDGE_FILE_LIMIT)}`);
+  }
   if (parts.length === 0) parts.push("No conventional judge artifacts were available.");
-  return parts.join("\n\n");
+  return clipBundle(parts);
 }
 
 export async function runLlmAssertion(

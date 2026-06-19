@@ -32,7 +32,7 @@ export type GraderKind = "deterministic" | "static" | "dynamic" | "trace" | "jud
 export type Severity = "critical" | "high" | "medium" | "low";
 
 /** Finding lifecycle. Slice 1 treats LLM-judge findings as advisory. */
-export type FindingStatus = "confirmed" | "advisory" | "dismissed";
+export type FindingStatus = "confirmed" | "unverified" | "advisory" | "dismissed";
 
 /** Evidence source type shown in reports. */
 export type EvidenceType = "deterministic" | "static" | "dynamic" | "trace" | "judge";
@@ -324,6 +324,8 @@ export interface DynamicProbe {
   severityOnFail?: Severity;
   canHardCap?: boolean;
   hardCapGrade?: GradeBand;
+  /** A success probe independently verifies the agent's claimed product success. */
+  verificationRole?: "success" | "negative";
 }
 
 export interface TraceMetrics {
@@ -536,6 +538,36 @@ export interface OzCodeExample {
   sourceUrl: string;
 }
 
+export type OzResearchSourceType = "docs" | "github" | "npm" | "pypi" | "package" | "sdk_types" | "package_probe";
+
+export interface OzResearchClaim {
+  id: string;
+  kind: string;
+  subject: string;
+  value: string;
+  sourceType: OzResearchSourceType;
+  evidence: OzEvidence;
+  confidence: number;
+}
+
+export interface OzClaimConflict {
+  id: string;
+  category: OzFrictionCategory;
+  title: string;
+  severity: Severity;
+  status: OzFrictionStatus;
+  claims: OzResearchClaim[];
+  recommendation: string;
+  confidence: number;
+}
+
+export interface OzResearchReport {
+  claims: OzResearchClaim[];
+  conflicts: OzClaimConflict[];
+  checkedSources: string[];
+  generatedAt: string;
+}
+
 export interface OzAuthProfile {
   scheme: "api_key" | "bearer" | "basic" | "oauth" | "unknown";
   headerName?: string;
@@ -685,6 +717,7 @@ export interface OzAgentState {
     packages: OzPackageCandidate[];
     codeExamples: OzCodeExample[];
   };
+  research?: OzResearchReport;
   productProfile?: OzProductProfile;
   suiteDraft?: OzSuiteDraft;
   verification?: OzVerification;

@@ -15,7 +15,8 @@ type FailureCode =
   | "environment_issue"
   | "product_api_error"
   | "harness_issue"
-  | "agent_secret_exposure";
+  | "agent_secret_exposure"
+  | "unclassified_needs_review";
 
 function runText(run: RunResult): string {
   return [
@@ -26,13 +27,9 @@ function runText(run: RunResult): string {
   ].join("\n").toLowerCase();
 }
 
-function runtimeSucceeded(run: RunResult, text: string): boolean {
+function runtimeSucceeded(run: RunResult, _text: string): boolean {
   if (run.gradeReport?.taskPassed) return true;
-  const deterministic = run.verdicts.filter((verdict) => verdict.type !== "llm");
-  const projectCommandPassed = deterministic.some((verdict) => /project command succeeds/i.test(verdict.name) && verdict.passed);
-  const resultContractPassed = deterministic.some((verdict) => /result (contract|artifact)/i.test(verdict.name) && verdict.passed);
-  const explicitSuccess = /\bhttp\s*200\b|\bhttpstatus["']?\s*[:=]\s*200\b|\bstatus["']?\s*[:=]\s*200\b|response \(http 200\)|"ok"\s*:\s*true/.test(text);
-  return run.status === "completed" && projectCommandPassed && resultContractPassed && explicitSuccess;
+  return false;
 }
 
 function failedOnlyAdvisoryOrPatternChecks(run: RunResult): boolean {
@@ -50,6 +47,7 @@ function classify(run: RunResult): FailureCode {
   if (run.errorType === "timeout" || /command timed out|run exceeded .* timeout/.test(text)) return "platform_timeout";
   if (/missing required product environment variables/.test(text)) return "missing_required_env";
   if (run.errorType === "platform" && /sandbox|firecracker|guest|ssh|manager unavailable|teardown/.test(text)) return "sandbox_failure";
+  if (/integration_success_unverified/.test(text)) return "harness_issue";
   if (runtimeSucceeded(run, text) && failedOnlyAdvisoryOrPatternChecks(run)) return "harness_issue";
   if (/secret is not printed|secret.*(printed|logged|exposed|leaked)|printed.*secret/.test(text)) return "agent_secret_exposure";
   if (/cannot find module|package|install|glibc|native binding|product (setup|preflight) step/.test(text)) return "environment_issue";
@@ -62,7 +60,7 @@ function classify(run: RunResult): FailureCode {
   if (/ambiguous|conflicting|two names/.test(text)) return "docs_ambiguous";
   if (/test suite|assertion/.test(text)) return "test_suite_issue";
   if (/hallucinat|invent/.test(text)) return "agent_hallucination";
-  return "docs_ambiguous";
+  return "unclassified_needs_review";
 }
 
 function severityFor(run: RunResult): Severity {

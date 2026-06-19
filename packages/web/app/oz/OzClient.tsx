@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { OzArtifact, OzEvent, OzJob, OzMode, OzScenario, OzSuiteDraft, ProductSecretSummary } from "@kiln/shared";
+import type { OzArtifact, OzEvent, OzJob, OzMode, OzResearchReport, OzScenario, OzSuiteDraft, ProductSecretSummary } from "@kiln/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonClassName } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -398,6 +398,11 @@ function OzPageInner({ user }: OzClientProps) {
       ? artifact.data as Array<{ surface: string; surfaces?: string[]; sourceUrl: string; signal: string; signals?: string[]; confidence: number }>
       : [];
   }, [artifacts]);
+  const research = useMemo(() => {
+    if (job?.state.research) return job.state.research;
+    const artifact = artifacts.find((item) => item.type === "research_report");
+    return artifact?.data && typeof artifact.data === "object" ? artifact.data as OzResearchReport : null;
+  }, [artifacts, job?.state.research]);
   const displayEvents = useMemo(() => buildDisplayEvents(events), [events]);
   const filteredDisplayEvents = useMemo(
     () => displayEvents.filter((event) => eventMatchesFilter(event, eventFilter)),
@@ -407,6 +412,8 @@ function OzPageInner({ user }: OzClientProps) {
   const latestDisplayKey = latestDisplayEvent ? `${latestDisplayEvent.id}:${latestDisplayEvent.count}:${events.length}` : "empty";
   const currentPhase = job ? phaseIndexForStatus(job.status) : 0;
   const docsCount = docsMap.length;
+  const researchConflictCount = research?.conflicts.length ?? 0;
+  const researchClaimCount = research?.claims.length ?? 0;
   const scenarioCount = draftSuite?.scenarios.length ?? 0;
   const runCount = job?.state.run?.runIds.length ?? 0;
   const requiredSecrets = job?.state.productProfile?.requiredEnv.length ?? 0;
@@ -787,6 +794,12 @@ function OzPageInner({ user }: OzClientProps) {
         </Card>
         <Card className="oz-stat-card">
           <CardContent>
+          <span>Research</span>
+          <strong>{researchConflictCount}</strong>
+          </CardContent>
+        </Card>
+        <Card className="oz-stat-card">
+          <CardContent>
           <span>Runs</span>
           <strong>{runCount}</strong>
           </CardContent>
@@ -894,6 +907,27 @@ function OzPageInner({ user }: OzClientProps) {
                 <p><strong>Required env:</strong> {job.state.productProfile.requiredEnv.map((env) => env.name).join(", ") || "none detected"}</p>
               </div>
               <p className="oz-summary">{job.state.productProfile.summary}</p>
+            </section>
+          )}
+
+          {research && (
+            <section className="oz-panel">
+              <div className="oz-panel-header">
+                <h2>Research</h2>
+                <Badge variant={research.conflicts.length ? "warning" : "success"}>
+                  {research.conflicts.length ? `${research.conflicts.length} conflicts` : "clean"}
+                </Badge>
+              </div>
+              <div className="oz-research-summary">
+                <div><strong>{research.checkedSources.length}</strong><span>sources checked</span></div>
+                <div><strong>{research.claims.length}</strong><span>claims extracted</span></div>
+              </div>
+              {research.conflicts.slice(0, 3).map((conflict) => (
+                <div className="oz-research-mini" key={conflict.id}>
+                  <strong>{conflict.title}</strong>
+                  <span>{insightLabel(conflict.status)} · {insightLabel(conflict.category)} · {confidence(conflict.confidence)}</span>
+                </div>
+              ))}
             </section>
           )}
 
@@ -1040,6 +1074,66 @@ function OzPageInner({ user }: OzClientProps) {
                 {busy ? "Working..." : "Run test suite"}
               </Button>
             </div>
+          )}
+        </section>
+      )}
+
+      {research && (
+        <section className="oz-panel">
+          <div className="oz-panel-header">
+            <div>
+              <h2>Research claim consistency</h2>
+              <p className="oz-summary">Oz compares docs, repositories, registries, package metadata, and SDK declarations before agents run.</p>
+            </div>
+            <Badge variant={research.conflicts.length ? "warning" : "success"}>
+              {research.conflicts.length ? `${research.conflicts.length} issue${research.conflicts.length === 1 ? "" : "s"}` : "no conflicts"}
+            </Badge>
+          </div>
+          <div className="oz-research-summary wide">
+            <div><strong>{research.checkedSources.length}</strong><span>checked sources</span></div>
+            <div><strong>{research.claims.length}</strong><span>claims</span></div>
+            <div><strong>{research.conflicts.filter((item) => item.status === "confirmed").length}</strong><span>confirmed</span></div>
+            <div><strong>{research.conflicts.filter((item) => item.status === "suspected").length}</strong><span>suspected</span></div>
+          </div>
+          {research.conflicts.length > 0 ? (
+            <div className="oz-research-conflicts">
+              {research.conflicts.map((conflict) => (
+                <article className={`oz-research-conflict ${conflict.status}`} key={conflict.id}>
+                  <div className="oz-friction-title">
+                    <div>
+                      <span>{insightLabel(conflict.category)}</span>
+                      <strong>{conflict.title}</strong>
+                    </div>
+                    <span className={`badge ${conflict.severity}`}>{insightLabel(conflict.status)} · {confidence(conflict.confidence)}</span>
+                  </div>
+                  <p>{conflict.recommendation}</p>
+                  <div className="oz-claim-grid">
+                    {conflict.claims.slice(0, 6).map((claim) => (
+                      <div className="oz-claim-card" key={claim.id}>
+                        <span>{claim.sourceType} · {claim.kind}</span>
+                        <strong>{claim.value}</strong>
+                        <p>{claim.evidence.source}: {claim.evidence.quote}</p>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="oz-empty-events">
+              <strong>No cross-source conflicts detected</strong>
+              <p>Oz still records the checked sources and extracted claims so future docs or package changes can be compared.</p>
+            </div>
+          )}
+          {research.checkedSources.length > 0 && (
+            <details className="oz-source-list">
+              <summary>Checked sources</summary>
+              <div>
+                {research.checkedSources.slice(0, 24).map((source) => (
+                  <a key={source} href={source.startsWith("http") ? source : undefined} target="_blank" rel="noreferrer">{source}</a>
+                ))}
+              </div>
+            </details>
           )}
         </section>
       )}

@@ -155,14 +155,9 @@ function leakedSecretSignal(run: RunResult): boolean {
   );
 }
 
-function runtimeSucceeded(run: RunResult, text: string): boolean {
+function runtimeSucceeded(run: RunResult, _text: string): boolean {
   if (run.gradeReport?.taskPassed) return true;
-  const projectCommandPassed = run.verdicts.some((verdict) => /project command succeeds/i.test(verdict.name) && verdict.passed);
-  const resultContractPassed = run.verdicts.some((verdict) => /result (contract|artifact)/i.test(verdict.name) && verdict.passed);
-  return run.status === "completed"
-    && projectCommandPassed
-    && resultContractPassed
-    && /\bhttp\s*200\b|httpstatus["']?\s*[:=]\s*200|"ok"\s*:\s*true/i.test(text);
+  return false;
 }
 
 function insight(input: Omit<DraftInsight, "traceEvidence" | "docsEvidence"> & {
@@ -470,9 +465,11 @@ export function behaviorSummaryFor(runs: RunResult[]): OzBehaviorSummary {
     totalRuns: runs.length,
     passedRuns: runs.filter((run) =>
       run.status === "completed"
-      && (run.gradeReport ? run.gradeReport.taskPassed : run.verdicts.every((verdict) => verdict.type === "llm" || verdict.passed))
+      && run.gradeReport?.taskPassed === true
     ).length,
-    failedRuns: runs.filter((run) => run.status === "errored" || (run.gradeReport && !run.gradeReport.taskPassed)).length,
+    failedRuns: runs.filter((run) =>
+      run.status === "errored" || (run.status === "completed" && run.gradeReport?.taskPassed !== true)
+    ).length,
     retrySignals: runs.reduce((sum, run) => sum + run.events.filter((event) => /\bretry|again|try another|rerun/i.test(event.text)).length, 0),
     apiErrorSignals: runs.reduce((sum, run) => sum + apiErrorSignals(run), 0),
     unsupportedSignals: runs.reduce((sum, run) => sum + unsupportedPackages(run, undefined).length, 0),

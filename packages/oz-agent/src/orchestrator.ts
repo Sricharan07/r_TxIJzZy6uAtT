@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { KilnStore } from "@kiln/shared/store";
 import type { OzAgentState, OzEvent, OzEventKind, OzJob, OzJobStatus, OzMode } from "@kiln/shared";
 import { runAssertionEngineerAgent } from "./agents/assertion-engineer-agent.js";
+import { runDocsResearchAgent } from "./agents/docs-research-agent.js";
 import { runDocsMapperAgent, type DocsMapItem } from "./agents/docs-mapper-agent.js";
 import { runProductAnalystAgent } from "./agents/product-analyst-agent.js";
 import { runSafetyAgent } from "./agents/safety-agent.js";
@@ -87,6 +88,18 @@ export class OzOrchestrator {
         profile: job.state.productProfile,
       });
       await this.artifact(job, "product_profile", "Product Intelligence", job.state.productProfile);
+
+      job.state = await runDocsResearchAgent(job.state, this.toolContext(job));
+      await this.save(job);
+      await this.artifact(job, "research_report", "Docs research report", job.state.research);
+      for (const conflict of job.state.research?.conflicts ?? []) {
+        await this.emit(job, "finding.created", conflict.title, {
+          conflictId: conflict.id,
+          category: conflict.category,
+          severity: conflict.severity,
+          status: conflict.status,
+        });
+      }
 
       job = await this.setStatus(job, "mapping_docs");
       const mapped = await runDocsMapperAgent(job.state);

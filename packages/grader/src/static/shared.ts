@@ -2,6 +2,7 @@ import type {
   CodeVsNoCode,
   EvalConfig,
   Finding,
+  FindingStatus,
   GradeBand,
   GraderEvidence,
   Severity,
@@ -127,6 +128,7 @@ export function makeFinding({
   title,
   severity,
   evidence,
+  status = "confirmed",
   canHardCap = severity === "critical",
   hardCapGrade,
   codeVsNoCode = "code",
@@ -136,6 +138,7 @@ export function makeFinding({
   title: string;
   severity: Severity;
   evidence: GraderEvidence[];
+  status?: FindingStatus;
   canHardCap?: boolean;
   hardCapGrade?: GradeBand;
   codeVsNoCode?: CodeVsNoCode;
@@ -148,7 +151,7 @@ export function makeFinding({
     code,
     title,
     severity,
-    status: "confirmed",
+    status,
     canHardCap,
     hardCapGrade: canHardCap ? hardCapGrade ?? "C-" : undefined,
     evidence,
